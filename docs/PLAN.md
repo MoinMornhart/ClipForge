@@ -5,7 +5,7 @@ Live-Fortschritt: https://claude.ai/artifact/SnkPaTEaAyFcUNNtkPsCXU
 | # | Meilenstein | Inhalt |
 |---|---|---|
 | M0 | Projekt-Setup | Repo, Struktur, Python-Umgebung, FFmpeg, CUDA-Check |
-| M1 | Grundgerüst | VOD laden → Transkript → Trigger „clip das“ → einfacher 9:16-Export, getestet |
+| M1 | Grundgerüst | VOD laden (Twitch, Kick, YouTube, Datei) → Transkript → Trigger „clip das“ → einfacher 9:16-Export, getestet |
 | M2 | KI-Bewertung | LLM (Anthropic/OpenAI) bestimmt Start/Ende mit Kontext, Viral-Score 1–10, Titel, Beschreibung, Hashtags; Kostenschätzung vor der Analyse |
 | M3 | Weitere Trigger | Eigene Schlüsselbegriffe (unscharf), Twitch-Chat (KEKW, LUL, !clip), Chat- und Lautstärkespitzen |
 | M4 | Facecam & Layouts | MediaPipe-Gesichtserkennung, manuelles Rechteck + Profil pro Streamer, 4 Layouts, intelligenter Gameplay-Ausschnitt, sanfte Nachführung |
