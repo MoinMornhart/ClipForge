@@ -101,46 +101,55 @@ def _cam_crop(li: LayoutInput, name: str = "cam") -> str:
     return f"{prefix}crop@{name}=w={ww}:h={wh}:x={_even(x)}:y={_even(y)}"
 
 
+def _gameplay_crop(sw: int, sh: int, cy: int, out_h: int, gx: int | None) -> str:
+    """Gameplay-Ausschnitt mit Seitenverhältnis W:out_h. Bei schmalen Quellen (Hochformat) wäre er breiter
+    als das Bild: dann volle Breite und passend weniger Höhe (mittig)."""
+    gw = gameplay_width(sh, W, out_h)
+    gh = sh
+    if gw > sw:
+        gw = _even(sw) if sw % 2 == 0 else _even(sw - 1)
+        gh = min(sh, _even(gw * out_h / W))
+        cy = cy + (sh - gh) // 2
+    x = gx if gx is not None else (sw - gw) // 2
+    x = min(max(0, x), sw - gw)
+    return f"crop={gw}:{gh}:{_even(x) if x >= 2 else 0}:{_even(cy) if cy >= 2 else 0}"
+
+
 def build(layout: str, li: LayoutInput) -> str:
     tail = f"fps={li.fps},format=yuv420p[v]"
     sw = li.src_w
     sh = _even(li.content_h or li.src_h)  # Gameplay ohne Balken
-    cy = _even(li.content_y)
+    cy = _even(li.content_y) if li.content_y >= 2 else 0
     gx = li.gameplay_x
 
     if layout == "crop":
-        gw = gameplay_width(sh, W, H)
-        x = gx if gx is not None else (sw - gw) // 2
-        return f"[0:v]crop={gw}:{sh}:{_even(x)}:{cy},scale={W}:{H}:flags=lanczos,setsar=1,{tail}"
+        return f"[0:v]{_gameplay_crop(sw, sh, cy, H, gx)},scale={W}:{H}:flags=lanczos,setsar=1,{tail}"
 
     if layout == "stack":
         top, bottom = li.stack_top, H - li.stack_top
-        gw = gameplay_width(sh, W, bottom)
-        x = gx if gx is not None else (sw - gw) // 2
+        gcrop = _gameplay_crop(sw, sh, cy, bottom, gx)
         return (
             f"[0:v]split=2[a][b];"
             f"[a]{_cam_crop(li)},scale={W}:{top}:flags=lanczos,setsar=1[top];"
-            f"[b]crop={gw}:{sh}:{_even(x)}:{cy},scale={W}:{bottom}:flags=lanczos,setsar=1[bot];"
+            f"[b]{gcrop},scale={W}:{bottom}:flags=lanczos,setsar=1[bot];"
             f"[top][bot]vstack=inputs=2,{tail}"
         )
 
     if layout == "hand":
         top, bottom = li.stack_top, H - li.stack_top
-        gw = gameplay_width(sh, W, bottom)
-        x = gx if gx is not None else (sw - gw) // 2
+        gcrop = _gameplay_crop(sw, sh, cy, bottom, gx)
         hw = fit_window(li.hand, W / top)
         return (
             f"[0:v]split=2[a][b];"
             f"[a]{_crop(hw)},scale={W}:{top}:flags=lanczos,setsar=1[top];"
-            f"[b]crop={gw}:{sh}:{_even(x)}:{cy},scale={W}:{bottom}:flags=lanczos,setsar=1[bot];"
+            f"[b]{gcrop},scale={W}:{bottom}:flags=lanczos,setsar=1[bot];"
             f"[top][bot]vstack=inputs=2,{tail}"
         )
 
     if layout == "face_hand":
         fh_, hh_ = li.face_hand_rows
         gh = H - fh_ - hh_
-        gw = gameplay_width(sh, W, gh)
-        x = gx if gx is not None else (sw - gw) // 2
+        gcrop = _gameplay_crop(sw, sh, cy, gh, gx)
         face_c = (li.face.cx, li.face.cy) if li.face else None
         fwin = fit_window(li.cam, W / fh_, face_c)
         hwin = fit_window(li.hand, W / hh_)
@@ -148,7 +157,7 @@ def build(layout: str, li: LayoutInput) -> str:
             f"[0:v]split=3[a][b][c];"
             f"[a]{_crop(fwin)},scale={W}:{fh_}:flags=lanczos,setsar=1[f];"
             f"[b]{_crop(hwin)},scale={W}:{hh_}:flags=lanczos,setsar=1[h];"
-            f"[c]crop={gw}:{sh}:{_even(x)}:{cy},scale={W}:{gh}:flags=lanczos,setsar=1[g];"
+            f"[c]{gcrop},scale={W}:{gh}:flags=lanczos,setsar=1[g];"
             f"[f][h][g]vstack=inputs=3,{tail}"
         )
 
@@ -167,14 +176,13 @@ def build(layout: str, li: LayoutInput) -> str:
         )
 
     if layout == "corner":
-        gw = gameplay_width(sh, W, H)
-        x = gx if gx is not None else (sw - gw) // 2
+        gcrop = _gameplay_crop(sw, sh, cy, H, gx)
         c = li.cam
         cw = li.corner_width
         ch = _even(cw * c.h / c.w)
         return (
             f"[0:v]split=2[a][b];"
-            f"[a]crop={gw}:{sh}:{_even(x)}:{cy},scale={W}:{H}:flags=lanczos,setsar=1[bg];"
+            f"[a]{gcrop},scale={W}:{H}:flags=lanczos,setsar=1[bg];"
             f"[b]crop={_even(c.w)}:{_even(c.h)}:{_even(c.x)}:{_even(c.y)},scale={cw}:{ch}:flags=lanczos,"
             f"pad={cw + 12}:{ch + 12}:6:6:color={li.accent},setsar=1[cam];"
             f"[bg][cam]overlay=36:170,{tail}"

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QTabWidget, QCheckBox, QComboBox, QDialog, QFileD
                                QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar,
                                QPushButton, QSplitter, QVBoxLayout, QWidget)
 
+from clipforge.core.log import get_logger
 from clipforge.core.settings import Settings
 from clipforge.pipeline import render
 from clipforge.pipeline.clips import (STATUS_APPROVED, STATUS_EXPORTED, STATUS_NEW, STATUS_REJECTED, Clip,
@@ -26,6 +27,8 @@ from clipforge.pipeline.transcribe import Word
 from clipforge.ui import theme
 from clipforge.ui.widgets import RangeSlider, RectSelector, bgr_to_qimage, fmt_time
 from clipforge.ui.worker import Task
+
+log = get_logger("ui.clips")
 
 STATUS_STYLE = {
     STATUS_NEW: ("neu", theme.MUTED, theme.PANEL_2),
@@ -201,8 +204,9 @@ class FacecamDialog(QDialog):
         self._task.start()
 
     def _auto_done(self, f: Facecam):
-        self.proj.state["facecam"] = f.to_dict()
-        self.proj.save()
+        if not self.isVisible():  # Dialog inzwischen geschlossen: Auswahl des Nutzers nicht überschreiben
+            return
+        self.cur = f  # gespeichert wird erst mit „Übernehmen“
         self.sel.rect_norm = f.cam if f.mode == "overlay" else None
         self.sel.update()
         self.state.setText(self._describe(f))
@@ -268,6 +272,12 @@ class FacecamDialog(QDialog):
             return
         self.accept()
 
+    def done(self, r):
+        for t in (self._task, self._pv_task):  # laufende Erkennung/Vorschau beenden
+            if t is not None:
+                t.cancel.set()
+        super().done(r)
+
 
 class ClipsPage(QWidget):
     status_message = Signal(str)
@@ -282,6 +292,9 @@ class ClipsPage(QWidget):
         self.cur: Clip | None = None
         self.tasks: list[Task] = []
         self._loading = False
+        self._exporting = False
+        self._previewing = False
+        self.export_task: Task | None = None
         self._save_timer = QTimer(self, singleShot=True, interval=400, timeout=self._save)
 
         root = QVBoxLayout(self)
@@ -517,6 +530,7 @@ class ClipsPage(QWidget):
     def open_project(self, pid: str):
         self.s = Settings.load()
         self.proj = Project(pid)
+        self.cur = None  # Editor neu laden
         self.clips = self.proj.load_clips()
         self.words = self.proj.load_words()
         src = self.proj.source
@@ -554,8 +568,13 @@ class ClipsPage(QWidget):
 
         t = Task(job)
         t.finished.connect(lambda _: self._fill_list())
-        self.tasks.append(t)
+        self._track(t)
         t.start()
+
+    def _track(self, t: Task) -> None:
+        """Task festhalten, solange er läuft, danach freigeben."""
+        self.tasks.append(t)
+        t._ended.connect(lambda t=t: self.tasks.remove(t) if t in self.tasks else None)
 
     def _visible(self) -> list[Clip]:
         cl = [c for c in self.clips if self.show_rejected.isChecked() or c.status != STATUS_REJECTED]
@@ -581,10 +600,16 @@ class ClipsPage(QWidget):
         self.list.blockSignals(False)
         approved = sum(c.status == STATUS_APPROVED for c in self.clips)
         self.export_info.setText(f"{approved} freigegeben · {len(self.clips)} gesamt")
-        self.export_btn.setEnabled(approved > 0)
+        self.export_btn.setEnabled(approved > 0 or self._exporting)
         if self.list.count():
+            self.list.blockSignals(True)
             self.list.setCurrentRow(row_sel)
-            self._select(row_sel)
+            self.list.blockSignals(False)
+            if keep and self.cur and self.list.item(row_sel).data(Qt.UserRole) == keep:
+                # derselbe Clip bleibt ausgewählt: ungespeicherte Eingaben im Editor nicht überschreiben
+                self.state_lbl.setText(self._state_text(self.cur, row_sel))
+            else:
+                self._select(row_sel)
         else:
             hidden = sum(c.status == STATUS_REJECTED for c in self.clips)
             it = QListWidgetItem("Keine Clips in dieser Ansicht.")
@@ -604,8 +629,9 @@ class ClipsPage(QWidget):
 
     def _enable_editor(self, on: bool):
         for w in (self.title_edit, self.desc_edit, self.tags_edit, self.transcript, self.approve_btn, self.reject_btn,
-                  self.layout_box, self.preview_btn, self.play_btn, self.range, *self.nudge_btns):
+                  self.layout_box, self.play_btn, self.range, *self.nudge_btns):
             w.setEnabled(on)
+        self.preview_btn.setEnabled(on and not self._previewing)
         self.right_stack.setCurrentIndex(1 if on else 0)
         if not on:
             self.player.pause()
@@ -621,9 +647,7 @@ class ClipsPage(QWidget):
         self._loading = True
         self.cur = c
         self._enable_editor(True)
-        label = STATUS_STYLE.get(c.status, STATUS_STYLE[STATUS_NEW])[0]
-        score = "–" if c.score is None else f"{c.score:.0f}/10"
-        self.state_lbl.setText(f"Clip {row + 1} von {self.list.count()} · Score {score} · {label}")
+        self.state_lbl.setText(self._state_text(c, row))
         self.title_edit.setText(c.title)
         self.desc_edit.setPlainText(c.description)
         self.tags_edit.setText(" ".join(c.hashtags))
@@ -640,6 +664,11 @@ class ClipsPage(QWidget):
         self.player.setPosition(int(c.start * 1000))
         self._show_still()
 
+    def _state_text(self, c: Clip, row: int) -> str:
+        label = STATUS_STYLE.get(c.status, STATUS_STYLE[STATUS_NEW])[0]
+        score = "–" if c.score is None else f"{c.score:.0f}/10"
+        return f"Clip {row + 1} von {self.list.count()} · Score {score} · {label}"
+
     def _show_still(self):
         """Standbild am Clipstart anzeigen, bis der Nutzer abspielt."""
         c = self.cur
@@ -649,7 +678,13 @@ class ClipsPage(QWidget):
             self.player.pause()
         self.play_btn.setText("▶ Abspielen")
         self.view.setCurrentWidget(self.poster)
-        fr = read_frames(self.proj.source.path, [c.start + 0.5], max_w=1280)
+        try:
+            fr = read_frames(self.proj.source.path, [c.start + 0.5], max_w=1280)
+        except Exception as e:  # Videodatei verschoben/gelöscht: ohne Standbild weiter
+            log.warning("Standbild nicht lesbar: %s", e)
+            fr = None
+            self._poster_pm = None
+            self.poster.setText("Videodatei nicht gefunden")
         if fr:
             pm = QPixmap.fromImage(bgr_to_qimage(fr[0][1]))
             self._poster_pm = pm
@@ -683,6 +718,7 @@ class ClipsPage(QWidget):
         if self._loading or not self.cur:
             return
         self.cur.start, self.cur.end = start, end
+        self.cur.user_bounds = True
         if self.cur.edited_words:  # Korrektur gilt für den alten Bereich: neu ausrichten lassen
             self.cur.edited_words = []
         self._show_transcript()
@@ -749,8 +785,10 @@ class ClipsPage(QWidget):
         if not self.proj:
             return
         at = (self.cur.start + self.cur.end) / 2 if self.cur else self.proj.media.get("duration", 60) / 2
-        dlg = FacecamDialog(Pipeline(self.s), self.proj, at, self)
-        if dlg.exec():
+        dlg = FacecamDialog(Pipeline(Settings.load()), self.proj, at, self)
+        ok = dlg.exec()
+        dlg.deleteLater()
+        if ok:
             self.open_project(self.proj.id)
             self.status_message.emit("Facecam gespeichert.")
 
@@ -759,6 +797,9 @@ class ClipsPage(QWidget):
             return
         proj, clip = self.proj, Clip.from_dict(self.cur.to_dict())
         out = Path(tempfile.gettempdir()) / f"clipforge_vorschau_{clip.id}.mp4"
+        if self._previewing:
+            return
+        self._previewing = True
         self.preview_btn.setEnabled(False)
         self.preview_btn.setText("Rendere …")
         s = Settings.load()
@@ -770,12 +811,14 @@ class ClipsPage(QWidget):
 
         t = Task(job)
         t.finished.connect(self._preview_done)
-        t.failed.connect(lambda m, h: (QMessageBox.warning(self, "Vorschau", f"{m}\n\n{h}"), self._preview_reset()))
-        self.tasks.append(t)
+        t.failed.connect(lambda m, h: (self._preview_reset(), QMessageBox.warning(self, "Vorschau", f"{m}\n\n{h}")))
+        t.cancelled.connect(self._preview_reset)
+        self._track(t)
         t.start()
 
     def _preview_reset(self):
-        self.preview_btn.setEnabled(True)
+        self._previewing = False
+        self.preview_btn.setEnabled(self.cur is not None)
         self.preview_btn.setText("9:16-Vorschau")
 
     def _preview_done(self, out: Path):
@@ -792,6 +835,12 @@ class ClipsPage(QWidget):
             self.folder.setText(d)
 
     def _export(self):
+        if self._exporting:  # Knopf ist während des Exports „Abbrechen“
+            if self.export_task:
+                self.export_task.cancel.set()
+                self.export_btn.setEnabled(False)
+                self.export_btn.setText("Breche ab …")
+            return
         if not self.proj:
             return
         self._save()
@@ -801,18 +850,29 @@ class ClipsPage(QWidget):
         def job(progress, cancel, confirm):
             return Pipeline(s, progress, cancel).export(proj, only_approved=True)
 
-        self.export_btn.setEnabled(False)
+        self._exporting = True
+        self.export_btn.setText("Export abbrechen")
+        self.export_btn.setObjectName("bad")
+        self.export_btn.style().polish(self.export_btn)
         self.export_bar.show()
         t = Task(job)
+        self.export_task = t
         t.progress.connect(lambda st, f, m: (self.export_bar.setValue(int(f * 1000)), self.status_message.emit(m)))
         t.finished.connect(self._export_done)
-        t.failed.connect(lambda m, h: (QMessageBox.warning(self, "Export", f"{m}\n\n{h}"), self._export_reset()))
-        self.tasks.append(t)
+        t.failed.connect(lambda m, h: (self._export_reset(), QMessageBox.warning(self, "Export", f"{m}\n\n{h}")))
+        t.cancelled.connect(lambda: (self._export_reset(), self.open_project(self.proj.id),
+                                     self.status_message.emit("Export abgebrochen.")))
+        self._track(t)
         t.start()
 
     def _export_reset(self):
+        self._exporting = False
+        self.export_task = None
         self.export_bar.hide()
-        self.export_btn.setEnabled(True)
+        self.export_btn.setText("Freigegebene exportieren")
+        self.export_btn.setObjectName("primary")
+        self.export_btn.style().polish(self.export_btn)
+        self.export_btn.setEnabled(any(c.status == STATUS_APPROVED for c in self.clips))
 
     def _export_done(self, paths):
         self._export_reset()

@@ -108,3 +108,27 @@ def test_graph_renders_with_tracked_object(src, tmp_path, layout):
     r = subprocess.run([FF, "-v", "error", "-ss", "0.5", "-t", "0.5", "-i", str(src), "-filter_complex", graph,
                         "-map", "[vl]", "-f", "null", "-"], cwd=tmp_path, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr[-600:]
+
+
+@pytest.fixture(scope="module")
+def portrait(tmp_path_factory):
+    if not FF:
+        pytest.skip("FFmpeg nicht installiert")
+    out = tmp_path_factory.mktemp("hoch") / "handy.mp4"
+    subprocess.run([FF, "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=1080x1920:rate=30:duration=2",
+                    "-c:v", "libx264", "-preset", "ultrafast", str(out)], check=True)
+    return out
+
+
+@pytest.mark.parametrize("kind", ["ohne", "fenster"])
+@pytest.mark.parametrize("layout", [x for x in layouts.LAYOUTS if x != "auto"])
+def test_portrait_source_renders(portrait, tmp_path, layout, kind):
+    """Handyvideo im Hochformat: Gameplay-Ausschnitt darf nie breiter als das Bild werden."""
+    cam = _cam(kind, layout in layouts.NEEDS_HAND)
+    job = RenderJob(portrait, Clip(start=0.2, end=1.2, trigger_time=1.0, reasons=[]), tmp_path / "o.mp4", layout,
+                    facecam=cam, nvenc=False, track_face=False, smart_crop=False)
+    media = {"width": 1080, "height": 1920, "duration": 2.0, "fps": 30.0, "has_audio": False}
+    resolved, graph = plan(job, media, tmp_path)
+    r = subprocess.run([FF, "-v", "error", "-i", str(portrait), "-filter_complex", graph, "-map", "[vl]",
+                        "-frames:v", "2", "-f", "null", "-"], cwd=tmp_path, capture_output=True, text=True)
+    assert r.returncode == 0, f"{layout}/{kind} → {resolved}: {r.stderr[-400:]}"

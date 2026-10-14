@@ -29,6 +29,7 @@ class Clip:
     export_path: str = ""
     # Im Editor korrigierte Wörter dieses Clips: [[wort, start, ende], …] in VOD-Sekunden
     edited_words: list[list] = field(default_factory=list)
+    user_bounds: bool = False  # Start/Ende von Hand gesetzt: bei Neu-Analyse behalten
 
     @property
     def duration(self) -> float:

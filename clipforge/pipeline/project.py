@@ -20,10 +20,7 @@ def project_id(source_ref: str) -> str:
     return hashlib.sha1(source_ref.strip().lower().encode()).hexdigest()[:12]
 
 
-def _write_json(path: Path, data) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(path)
+from clipforge.core.jsonio import LOCK, write_json as _write_json  # noqa: E402
 
 
 class Project:
@@ -159,7 +156,26 @@ class Project:
         return [Word(**w) for w in json.loads(self.transcript_path.read_text(encoding="utf-8"))]
 
     def save_clips(self, clips: list[Clip]) -> None:
-        _write_json(self.clips_path, [c.to_dict() for c in clips])
+        """Speichert die Clips. Ein inzwischen vom Export gesetzter Status „exportiert“ wird dabei nicht mit
+        einem älteren Stand (z. B. aus der Oberfläche) überschrieben."""
+        with LOCK:
+            disk = {c.id: c for c in self.load_clips()}
+            for c in clips:
+                d = disk.get(c.id)
+                if d and d.export_path and not c.export_path:
+                    c.status, c.export_path = d.status, d.export_path
+            _write_json(self.clips_path, [c.to_dict() for c in clips])
+
+    def update_clip(self, cid: str, **fields) -> None:
+        """Nur einzelne Felder eines Clips ändern (frisch laden, ändern, speichern) – für Hintergrundarbeit,
+        damit gleichzeitige Änderungen in der Oberfläche erhalten bleiben."""
+        with LOCK:
+            clips = self.load_clips()
+            for c in clips:
+                if c.id == cid:
+                    for k, v in fields.items():
+                        setattr(c, k, v)
+            _write_json(self.clips_path, [c.to_dict() for c in clips])
 
     def load_clips(self) -> list[Clip]:
         if not self.clips_path.exists():

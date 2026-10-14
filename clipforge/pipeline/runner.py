@@ -20,7 +20,8 @@ from clipforge.pipeline.chat import load_chat
 from clipforge.pipeline.facecam import Facecam, detect_facecam
 from clipforge.pipeline.subtitles import SubtitleStyle
 from clipforge.pipeline.triggers import Hit
-from clipforge.pipeline.clips import STATUS_APPROVED, STATUS_EXPORTED, STATUS_REJECTED, Clip, candidates_from_hits
+from clipforge.pipeline.clips import (STATUS_APPROVED, STATUS_EXPORTED, STATUS_NEW, STATUS_REJECTED, Clip,
+                                     candidates_from_hits)
 from clipforge.pipeline.llm import CostEstimate, Scorer, estimate_cost, resolve_overlaps
 from clipforge.pipeline.project import Project
 from clipforge.pipeline.transcribe import ApiWhisper, LocalWhisper, transcribe_source
@@ -33,6 +34,40 @@ Progress = Callable[[str, float, str], None]
 
 def _noop(step: str, frac: float, msg: str) -> None:
     pass
+
+
+_USER_FIELDS = ("id", "status", "title", "description", "hashtags", "layout", "score", "ai_reason", "export_path",
+                "edited_words", "user_bounds")
+
+
+def _edited(c: Clip) -> bool:
+    return bool(c.status != STATUS_NEW or c.title or c.edited_words or c.user_bounds or c.score is not None
+                or c.export_path)
+
+
+def carry_over(old: list[Clip], new: list[Clip]) -> list[Clip]:
+    """Bearbeitungen aus der vorigen Analyse übernehmen. Zuordnung über die Überlappung (≥ 50 % des kürzeren
+    Clips), nicht über den exakten Triggerzeitpunkt – der verschiebt sich, wenn neue Trigger hinzukommen.
+    Bearbeitete alte Clips ohne Gegenstück bleiben erhalten."""
+    used: set[str] = set()
+    for c in new:
+        best, best_ov = None, 0.0
+        for o in old:
+            if o.id in used:
+                continue
+            ov = min(c.end, o.end) - max(c.start, o.start)
+            short = min(c.duration, o.duration) or 1.0
+            if ov / short >= 0.5 and ov > best_ov:
+                best, best_ov = o, ov
+        if best is None:
+            continue
+        used.add(best.id)
+        for f in _USER_FIELDS:
+            setattr(c, f, getattr(best, f))
+        if best.user_bounds or best.score is not None:  # von Hand oder von der KI gesetzte Grenzen behalten
+            c.start, c.end = best.start, best.end
+    kept = [o for o in old if o.id not in used and _edited(o)]
+    return sorted(new + kept, key=lambda c: c.trigger_time)
 
 
 class Pipeline:
@@ -148,15 +183,7 @@ class Pipeline:
         hits = find_hits(words, self.s.all_triggers()) + self.chat_hits(proj) + self.audio_hits(proj)
         hits.sort(key=lambda h: h.time)
         clips = candidates_from_hits(hits, proj.media["duration"], self.s)
-        # Bereits bearbeitete Clips (Status, Titel, Layout) behalten
-        old = {round(c.trigger_time, 1): c for c in proj.load_clips()}
-        for c in clips:
-            prev = old.get(round(c.trigger_time, 1))
-            if prev:
-                c.id, c.status, c.title, c.layout = prev.id, prev.status, prev.title, prev.layout
-                c.score, c.description, c.hashtags = prev.score, prev.description, prev.hashtags
-                if prev.score is not None:  # von der KI oder von Hand gesetzte Grenzen behalten
-                    c.start, c.end, c.ai_reason = prev.start, prev.end, prev.ai_reason
+        clips = carry_over(proj.load_clips(), clips)
         proj.save_clips(clips)
         proj.mark("triggers")
         self.progress("triggers", 1.0, f"{len(hits)} Trigger, {len(clips)} Clips gefunden")
@@ -314,12 +341,14 @@ class Pipeline:
             fcm.subject_file = (subject_file if subject_file and Path(subject_file).exists()
                                 else self._save_subject(proj, subject_norm, at or 0.0))
         proj.state["facecam"] = fcm.to_dict()
-        proj.state["facecam"] = fcm.to_dict()
         proj.save()
         src = proj.source
         if save_profile and src and src.streamer:
-            self.s.facecam_profiles[src.streamer] = {**fcm.to_dict(), "source": "profil"}
-            self.s.save()
+            # frisch laden: self.s kann älter sein als inzwischen gespeicherte Einstellungen
+            fresh = Settings.load()
+            fresh.facecam_profiles[src.streamer] = {**fcm.to_dict(), "source": "profil"}
+            fresh.save()
+            self.s.facecam_profiles = fresh.facecam_profiles
         return fcm
 
     def _save_subject(self, proj: Project, subject_norm: list[float], at: float) -> str:
@@ -328,9 +357,10 @@ class Pipeline:
         import cv2
 
         from clipforge.core.paths import sub
-        from clipforge.pipeline.facecam import Rect, read_frames
+        from clipforge.pipeline.facecam import FULL_RES, Rect, read_frames
 
-        frames = read_frames(proj.source.path, [at])
+        # Originalgröße: die Vorlage wird später in Bildern voller Auflösung gesucht
+        frames = read_frames(proj.source.path, [at], max_w=FULL_RES)
         if not frames:
             raise ClipForgeError("Das Vorschaubild konnte nicht gelesen werden.", "Wähle eine andere Stelle im Clip.")
         f = frames[0][1]
@@ -378,8 +408,6 @@ class Pipeline:
             render.write_metadata(clip, out)
             clip.status, clip.export_path = STATUS_EXPORTED, str(out)
             results.append(out)
-            by_id = {c.id: c for c in all_clips}
-            by_id[clip.id] = clip
-            proj.save_clips(list(by_id.values()))
+            proj.update_clip(clip.id, status=STATUS_EXPORTED, export_path=str(out))
         self.progress("export", 1.0, f"{len(results)} Clips exportiert nach {out_dir}")
         return results

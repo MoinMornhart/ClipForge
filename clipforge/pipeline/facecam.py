@@ -85,23 +85,30 @@ class Facecam:
 # --------------------------------------------------------------------------- Bilder + Detektor
 
 
+FULL_RES = 1 << 20  # max_w für Bilder in Originalgröße (Koordinaten = Quellpixel)
+
+
 def read_frames(path: Path, times: list[float], max_w: int = 1920) -> list[tuple[float, np.ndarray]]:
+    """Einzelbilder lesen. Achtung: Breitere Bilder werden auf max_w verkleinert – wer mit Quellpixel-
+    Koordinaten (Rect aus media width/height) rechnet, muss max_w=FULL_RES übergeben."""
     import cv2
 
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
         raise ClipForgeError("Das Video konnte für die Bildanalyse nicht geöffnet werden.", "Details im Log.")
     out = []
-    for t in times:
-        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
-        ok, frame = cap.read()
-        if not ok:
-            continue
-        if frame.shape[1] > max_w:
-            s = max_w / frame.shape[1]
-            frame = cv2.resize(frame, (max_w, int(frame.shape[0] * s)), interpolation=cv2.INTER_AREA)
-        out.append((t, frame))
-    cap.release()
+    try:
+        for t in times:
+            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+            ok, frame = cap.read()
+            if not ok:
+                continue
+            if frame.shape[1] > max_w:
+                s = max_w / frame.shape[1]
+                frame = cv2.resize(frame, (max_w, int(frame.shape[0] * s)), interpolation=cv2.INTER_AREA)
+            out.append((t, frame))
+    finally:
+        cap.release()
     return out
 
 
@@ -599,7 +606,7 @@ def track_window(path: Path, start: float, end: float, region: Rect, win_w: floa
     """
     det = detector or FaceDetector()
     times = [start + i * step for i in range(int((end - start) / step) + 1)]
-    frames = read_frames(path, times)
+    frames = read_frames(path, times, max_w=FULL_RES)  # region ist in Quellpixeln
     tr = Track()
     cx, cy = region.cx, region.cy
     target_x, target_y = cx, cy
@@ -751,17 +758,19 @@ def read_frames_seq(path: Path, start: float, end: float, fps: float = 5.0) -> l
     cap.set(cv2.CAP_PROP_POS_MSEC, start * 1000)
     every = max(1, int(round(src_fps / fps)))
     out, i, t = [], 0, start
-    while t <= end:
-        ok = cap.grab()
-        if not ok:
-            break
-        if i % every == 0:
-            ok, frame = cap.retrieve()
-            if ok:
-                out.append((t, frame))
-        i += 1
-        t = start + i / src_fps
-    cap.release()
+    try:
+        while t <= end:
+            ok = cap.grab()
+            if not ok:
+                break
+            if i % every == 0:
+                ok, frame = cap.retrieve()
+                if ok:
+                    out.append((t, frame))
+            i += 1
+            t = start + i / src_fps
+    finally:
+        cap.release()
     return out
 
 
@@ -823,7 +832,8 @@ def layouts_window(region: Rect, aspect: float) -> tuple[float, float]:
 def locate_subject(path: Path, duration: float, finder: SubjectFinder, n: int = 12) -> Rect | None:
     """Sucht das markierte Objekt im ganzen Bild (z. B. wenn das Cam-Fenster verschoben wurde).
     Liefert die mittlere Position, wenn es in mindestens 40 % der Bilder gefunden wurde."""
-    frames = read_frames(path, [duration * (i + 0.5) / n for i in range(n)])
+    # Originalgröße: Ergebnis in Quellpixeln und im Maßstab der gespeicherten Vorlage
+    frames = read_frames(path, [duration * (i + 0.5) / n for i in range(n)], max_w=FULL_RES)
     hits = [r for _, f in frames for r, s in [finder.find(f)] if r is not None]
     if len(hits) < max(2, 0.4 * len(frames)):
         return None
