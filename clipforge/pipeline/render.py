@@ -226,16 +226,19 @@ def render(job: RenderJob, on_progress: Callable[[float], None] | None = None,
             last = "vw"
         chain.append(f"[{last}]null[v]")
         afilter = ["-af", "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000"] if job.loudnorm else []
-        main_out = job.out if not (job.intro or job.outro) else work / "main.mp4"
+        # im Arbeitsordner rendern, erst fertig in den Exportordner: Abbruch hinterlässt keine halbe Datei
+        final = work / "final.mp4"
+        main_out = final if not (job.intro or job.outro) else work / "main.mp4"
         args = [*inputs, "-filter_complex", ";".join(chain), "-map", "[v]", "-map", "0:a?", *afilter,
                 *encoder_args(job.codec, nvenc), "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
                 "-movflags", "+faststart", str(main_out.resolve())]
-        share = 0.85 if main_out != job.out else 1.0
+        share = 0.85 if main_out != final else 1.0
         ffmpeg.run(args, duration=dur, on_progress=(lambda f: on_progress(f * share)) if on_progress else None,
                    cancel=cancel, configured=ffmpeg_path, cwd=work,
                    error_message=f"Clip „{clip.title or clip.id}“ konnte nicht exportiert werden.")
-        if main_out != job.out:
-            _concat_intro_outro(job, main_out, nvenc, ffmpeg_path, cancel)
+        if main_out != final:
+            _concat_intro_outro(job, main_out, final, nvenc, ffmpeg_path, cancel)
+        shutil.move(str(final), str(job.out))
         log.info("Exportiert: %s (%s, %s)", job.out, layout, "NVENC" if nvenc else "CPU")
         if on_progress:
             on_progress(1.0)
@@ -244,7 +247,7 @@ def render(job: RenderJob, on_progress: Callable[[float], None] | None = None,
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _concat_intro_outro(job: RenderJob, main: Path, nvenc: bool, ffmpeg_path: str, cancel) -> None:
+def _concat_intro_outro(job: RenderJob, main: Path, out: Path, nvenc: bool, ffmpeg_path: str, cancel) -> None:
     parts = [p for p in (job.intro, str(main), job.outro) if p]
     for p in parts:
         if not Path(p).exists():
@@ -265,7 +268,7 @@ def _concat_intro_outro(job: RenderJob, main: Path, nvenc: bool, ffmpeg_path: st
     filters.append(f"{''.join(labels)}concat=n={len(parts)}:v=1:a=1[v][a]")
     ffmpeg.run([*inputs, "-filter_complex", ";".join(filters), "-map", "[v]", "-map", "[a]",
                 *encoder_args(job.codec, nvenc), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
-                str(job.out)], duration=total, cancel=cancel, configured=ffmpeg_path,
+                str(out)], duration=total, cancel=cancel, configured=ffmpeg_path,
                error_message="Intro/Outro konnten nicht angefügt werden.")
 
 
@@ -282,9 +285,23 @@ def safe_name(s: str, max_len: int = 80) -> str:
 
 def output_name(clip: Clip, s: Settings, date: str, streamer: str, index: int) -> str:
     title = clip.title or f"Clip_{index:02d}"
-    name = s.filename_pattern.format(date=date or "ohne-Datum", streamer=streamer or "Streamer", title=title,
-                                     index=f"{index:02d}", score=int(clip.score or 0))
+    values = {"date": date or "ohne-Datum", "streamer": streamer or "Streamer", "title": title,
+              "index": f"{index:02d}", "score": int(clip.score or 0)}
+    # deutsche Platzhalter sind naheliegend – mit erlauben
+    values.update(datum=values["date"], titel=title, nummer=values["index"])
+    try:
+        name = s.filename_pattern.format_map(_Keep(values))
+    except (ValueError, IndexError, AttributeError, TypeError):  # kaputtes Muster: Standard statt Absturz
+        log.warning("Dateinamen-Muster ungültig: %r – nutze Standard", s.filename_pattern)
+        name = "{date}_{streamer}_{title}".format_map(values)
     return safe_name(name, 120)
+
+
+class _Keep(dict):
+    """Unbekannte Platzhalter bleiben als Text stehen statt den Export abstürzen zu lassen."""
+
+    def __missing__(self, key):
+        return key
 
 
 def unique_path(p: Path) -> Path:

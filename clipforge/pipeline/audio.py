@@ -18,6 +18,7 @@ from typing import Callable
 
 from clipforge.core import ffmpeg
 from clipforge.core.errors import Cancelled
+from clipforge.core.jsonio import write_json
 from clipforge.core.log import get_logger
 
 log = get_logger("audio")
@@ -52,20 +53,27 @@ def measure_levels(src: Path, duration: float, work_dir: Path, on_progress: Call
     levels: list[float] = []
     rx = re.compile(r"RMS_level=(-?[\d.]+|-inf)")
     assert proc.stdout
-    for line in proc.stdout:
-        m = rx.search(line)
-        if not m:
-            continue
-        v = m.group(1)
-        levels.append(-90.0 if v == "-inf" else max(-90.0, float(v)))
-        if len(levels) % 600 == 0:
-            if cancel and cancel.is_set():
-                proc.kill()
-                raise Cancelled()
-            if on_progress and duration:
-                on_progress(min(1.0, len(levels) * HOP / duration), "Messe Lautstärke …")
-    proc.wait()
-    cache.write_text(json.dumps([round(x, 1) for x in levels]))
+    try:
+        for line in proc.stdout:
+            m = rx.search(line)
+            if not m:
+                continue
+            v = m.group(1)
+            levels.append(-90.0 if v == "-inf" else max(-90.0, float(v)))
+            if len(levels) % 600 == 0:
+                if cancel and cancel.is_set():
+                    raise Cancelled()
+                if on_progress and duration:
+                    on_progress(min(1.0, len(levels) * HOP / duration), "Messe Lautstärke …")
+        proc.wait()
+    finally:
+        if proc.poll() is None:  # Abbruch oder Fehler: FFmpeg nicht weiterlaufen lassen
+            proc.kill()
+            proc.wait()
+    if proc.returncode == 0 and levels:  # nur vollständige Messungen zwischenspeichern
+        write_json(cache, [round(x, 1) for x in levels], indent=None)
+    else:
+        log.warning("Lautstärkemessung unvollständig (Code %s) – nicht zwischengespeichert", proc.returncode)
     return levels
 
 

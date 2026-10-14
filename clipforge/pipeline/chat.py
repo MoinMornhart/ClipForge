@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
+from clipforge.core.jsonio import write_json
 from clipforge.core.errors import Cancelled, ClipForgeError
 from clipforge.core.log import get_logger
 
@@ -57,11 +58,17 @@ def twitch_vod_id(url: str) -> str | None:
     return m.group(1) if m else None
 
 
+class ChatResult(list):
+    """Liste der Nachrichten; complete=False, wenn wegen Netzfehlern Teile fehlen (dann nicht zwischenspeichern)."""
+
+    complete = True
+
+
 def fetch_twitch(vod_id: str, start: float, end: float, on_progress=None, cancel=None) -> list[ChatMessage]:
     """Blättert über die Zeitposition (das Weiterblättern per Cursor verlangt bei Twitch inzwischen
     eine Integritätsprüfung). Jede Antwort enthält die Nachrichten ab der angefragten Sekunde."""
     s = _session()
-    out: list[ChatMessage] = []
+    out = ChatResult()
     seen: set[str] = set()
     off = int(start)
     pages = errors = 0
@@ -82,10 +89,11 @@ def fetch_twitch(vod_id: str, start: float, end: float, on_progress=None, cancel
                                      str(e)) from e
             if errors > 5:
                 log.warning("Twitch-Chat abgebrochen bei %s s: %s", off, e)
+                out.complete = False
                 break
             time.sleep(errors)
             continue
-        newest = off
+        newest, added = off, 0
         for ed in edges:
             n = ed["node"]
             t = float(n["contentOffsetSeconds"])
@@ -93,6 +101,7 @@ def fetch_twitch(vod_id: str, start: float, end: float, on_progress=None, cancel
             if key in seen:
                 continue
             seen.add(key)
+            added += 1
             newest = max(newest, int(t))
             if start <= t <= end:
                 text = "".join(f.get("text", "") for f in (n.get("message") or {}).get("fragments") or [])
@@ -100,8 +109,10 @@ def fetch_twitch(vod_id: str, start: float, end: float, on_progress=None, cancel
         pages += 1
         if on_progress and end > start:
             on_progress(min(1.0, (newest - start) / (end - start)), f"Twitch-Chat: {len(out)} Nachrichten")
-        # Weiter ab der neuesten Sekunde; ohne neue Nachrichten 10 s springen
-        off = newest + 1 if newest > off else off + 10
+        # Twitch liefert ab einer ganzen Sekunde nur eine begrenzte Seite. Darum weiter AB (nicht nach) der
+        # neuesten Sekunde – sonst fehlt in Chat-Spitzen der Rest dieser Sekunde; Doppelte fallen über die ID
+        # raus. Nur wenn nichts Neues kam: 1 s weiter (Seite voll mit Bekanntem) bzw. 10 s (Chat still).
+        off = newest if added and newest > off else off + (1 if edges else 10)
         time.sleep(0.05)
     out.sort(key=lambda m: m.t)
     return out
@@ -131,6 +142,7 @@ def fetch_kick(url: str, start: float, end: float, on_progress=None, cancel=None
     lock = threading.Lock()
     found: dict[str, ChatMessage] = {}
     done_secs = [0.0]
+    complete = [True]
 
     def crawl(a: float, b: float) -> None:
         sess = _session()
@@ -147,18 +159,24 @@ def fetch_kick(url: str, start: float, end: float, on_progress=None, cancel=None
                 errors += 1
                 if errors > 5:
                     log.warning("Kick-Chat-Abschnitt abgebrochen bei %.0f s: %s", t, e)
+                    complete[0] = False
                     return
                 time.sleep(2 * errors)
                 continue
-            newest = t
+            newest, added = t, 0
             with lock:
                 for m in msgs:
                     mt = (dt.datetime.fromisoformat(m["created_at"].replace("Z", "+00:00")) - t0).total_seconds()
                     newest = max(newest, mt)
                     if start <= mt <= end and m.get("id") not in found:
+                        added += 1
                         found[m.get("id")] = ChatMessage(mt, m.get("content", ""),
                                                          (m.get("sender") or {}).get("username", ""))
-            nxt = newest + 1.0 if newest > t else t + step_empty
+            # ab der neuesten vollen Sekunde weiter (wie bei Twitch), damit in Spitzen nichts fehlt
+            if added and int(newest) > t:
+                nxt = float(int(newest))
+            else:
+                nxt = t + (1.0 if msgs else step_empty)
             with lock:
                 done_secs[0] += min(nxt, b) - t
                 if on_progress:
@@ -171,7 +189,9 @@ def fetch_kick(url: str, start: float, end: float, on_progress=None, cancel=None
         list(ex.map(lambda i: crawl(bounds[i], bounds[i + 1]), range(n)))
     if cancel and cancel.is_set():
         raise Cancelled()
-    return sorted(found.values(), key=lambda m: m.t)
+    out = ChatResult(sorted(found.values(), key=lambda m: m.t))
+    out.complete = complete[0]
+    return out
 
 
 # --------------------------------------------------------------------------- Laden mit Zwischenspeicher
@@ -192,8 +212,12 @@ def load_chat(url: str, duration: float, work_dir: Path, offset: float = 0.0,
         msgs = fetch_kick(url, start, end, on_progress, cancel)
     else:
         return None
+    complete = getattr(msgs, "complete", True)
     msgs = [ChatMessage(round(m.t - offset, 2), m.text, m.user) for m in msgs]
-    cache.write_text(json.dumps([asdict(m) for m in msgs], ensure_ascii=False), encoding="utf-8")
+    if complete:
+        write_json(cache, [asdict(m) for m in msgs], indent=None)
+    else:  # lückenhaft: nicht zwischenspeichern, beim nächsten Mal neu laden
+        log.warning("Chat unvollständig geladen – wird nicht zwischengespeichert")
     log.info("Chat geladen: %d Nachrichten", len(msgs))
     return msgs
 

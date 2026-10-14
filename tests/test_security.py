@@ -70,3 +70,17 @@ def test_swap_rolls_back_on_failure(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         updater._swap_code(src)
     assert (tmp_path / "clipforge" / "alt.py").exists()  # alter Code ist wieder da
+
+
+def test_redirect_into_local_network_is_refused_before_following():
+    import urllib.request
+
+    import pytest
+
+    from clipforge.core.errors import ClipForgeError
+    from clipforge.pipeline.importer import _opener
+
+    h = next(x for x in _opener().handlers if isinstance(x, urllib.request.HTTPRedirectHandler))
+    req = urllib.request.Request("https://cdn.example.com/seg.ts")
+    with pytest.raises(ClipForgeError):
+        h.redirect_request(req, None, 302, "Found", {}, "http://192.168.0.1/cgi-bin/reboot")

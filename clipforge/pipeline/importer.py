@@ -87,30 +87,37 @@ def check_public_url(url: str) -> None:
                                  "Aus Sicherheitsgründen wird das nicht geladen.", f"{u.hostname} → {ip}")
 
 
-_checked_hosts: set[str] = set()
+def _opener():
+    """urllib-Opener, der JEDE Weiterleitung vor dem Folgen prüft – sonst ginge die Anfrage an eine interne
+    Adresse schon raus, bevor die Antwort verworfen wird."""
+    import urllib.request
+
+    class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            check_public_url(newurl)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    return urllib.request.build_opener(_SafeRedirect)
 
 
 def _fetch(url: str, headers: dict, timeout: int = 30, retries: int = 5) -> bytes:
     import time
     import urllib.request
-    from urllib.parse import urlparse
 
-    host = urlparse(url).hostname or ""
-    if host not in _checked_hosts:
-        check_public_url(url)
-        _checked_hosts.add(host)
+    # bei jeder Anfrage neu prüfen (kein Merken pro Host: ein Name kann später auf eine andere IP zeigen)
+    check_public_url(url)
+    opener = _opener()
     last = None
     for i in range(retries):
         try:
             req = urllib.request.Request(url, headers=headers or {})
-            with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 – Schema/Host geprüft
-                if urlparse(r.geturl()).hostname not in _checked_hosts:  # Weiterleitung auf anderen Host
-                    check_public_url(r.geturl())
-                    _checked_hosts.add(urlparse(r.geturl()).hostname or "")
+            with opener.open(req, timeout=timeout) as r:  # noqa: S310 – Schema/Host und Weiterleitungen geprüft
                 data = r.read(MAX_FETCH + 1)
                 if len(data) > MAX_FETCH:
                     raise ClipForgeError("Ein Videostück ist unerwartet groß.", "Der Download wurde abgebrochen.")
                 return data
+        except ClipForgeError:
+            raise  # Weiterleitung ins lokale Netz: nicht erneut versuchen
         except OSError as e:
             last = e
             time.sleep(1 + i)
@@ -184,11 +191,15 @@ def hls_section(playlist_url: str, headers: dict, start: float, end: float, out:
                 fo.write(_fetch(init, headers))
             for i in range(len(pick)):
                 fo.write((tmp / f"{i:06d}.seg").read_bytes())
-        ff.run(["-i", str(joined), "-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy",
-                *(["-bsf:a", "aac_adtstoasc"] if not init else []), "-movflags", "+faststart", str(out)],
+        # erst unter .part schreiben: ein Abbruch hinterlässt nie eine halbe Datei, die später als fertig gilt
+        part = out.with_name(out.stem + ".part.mp4")
+        ff.run(["-y", "-i", str(joined), "-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy",
+                *(["-bsf:a", "aac_adtstoasc"] if not init else []), "-movflags", "+faststart", str(part)],
                cancel=cancel, configured=ffmpeg_path, error_message="Der Ausschnitt konnte nicht zusammengefügt werden.")
+        part.replace(out)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+        out.with_name(out.stem + ".part.mp4").unlink(missing_ok=True)
     if on_progress:
         on_progress(1.0, "Ausschnitt geladen")
     log.info("HLS-Ausschnitt %s–%s s: %d Stücke, Start %.2f s", start, end, len(pick), pick[0][0])

@@ -228,13 +228,24 @@ def server_url(p: Provider, configured: str) -> str:
 
 
 def _parse_json(text: str) -> dict:
+    """Erstes gültiges JSON-Objekt aus der Antwort (kleine Modelle schreiben gern Text drumherum oder
+    mehrere Objekte). Wirft ValueError, wenn keines da ist."""
+    text = text or ""
     try:
-        return json.loads(text)
+        r = json.loads(text)
+        if isinstance(r, dict):
+            return r
     except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", text, re.S)
-        if m:
-            return json.loads(m.group(0))
-        raise
+        pass
+    dec = json.JSONDecoder()
+    for m in re.finditer(r"\{", text):
+        try:
+            r, _ = dec.raw_decode(text, m.start())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(r, dict):
+            return r
+    raise ValueError("Die KI-Antwort enthält kein lesbares JSON-Objekt.")
 
 
 class Scorer:
@@ -349,8 +360,14 @@ class Scorer:
         if not lines:
             clip.ai_reason = "Kein gesprochener Text an dieser Stelle."
             return clip
-        result = self.ask(build_prompt(clip, lines, s))
-        apply_result(clip, result, lines, s, duration)
+        prompt = build_prompt(clip, lines, s)
+        for attempt in range(2):  # unlesbare Antwort: einmal neu fragen, dann ohne Bewertung weiter
+            try:
+                apply_result(clip, self.ask(prompt), lines, s, duration)
+                return clip
+            except (ValueError, AttributeError, TypeError) as e:
+                log.warning("KI-Antwort unlesbar (Versuch %d): %s", attempt + 1, e)
+        clip.ai_reason = "KI-Antwort unlesbar – Clip ohne Bewertung."
         return clip
 
 
@@ -380,16 +397,23 @@ def resolve_overlaps(clips: list[Clip], min_len: float) -> None:
     from clipforge.pipeline.clips import STATUS_REJECTED
 
     live = sorted((c for c in clips if c.status != STATUS_REJECTED), key=lambda c: c.start)
-    for a, b in zip(live, live[1:]):
-        if a.status == STATUS_REJECTED or b.status == STATUS_REJECTED or a.end <= b.start:
+    if not live:
+        return
+    prev = live[0]  # letzter noch gültiger Clip – nicht nur Nachbarpaare, sonst bleiben nach einem
+    for b in live[1:]:  # Verwerfen Überschneidungen über den verworfenen hinweg bestehen
+        a = prev
+        if a.end <= b.start:
+            prev = b
             continue
         if b.start - a.start >= min_len:
             a.end = round(b.start, 2)
-        else:
-            weaker = a if (a.score or 0) < (b.score or 0) else b
-            weaker.status = STATUS_REJECTED
-            weaker.ai_reason = (weaker.ai_reason + " " if weaker.ai_reason else "") + \
-                "(Automatisch verworfen: überschneidet sich mit einem stärkeren Clip.)"
+            prev = b
+            continue
+        weaker = a if (a.score or 0) < (b.score or 0) else b
+        weaker.status = STATUS_REJECTED
+        weaker.ai_reason = (weaker.ai_reason + " " if weaker.ai_reason else "") + \
+            "(Automatisch verworfen: überschneidet sich mit einem stärkeren Clip.)"
+        prev = b if weaker is a else a
 
 
 def apply_result(clip: Clip, r: dict, lines: list[Line], s: Settings, duration: float) -> None:
@@ -421,10 +445,10 @@ def apply_result(clip: Clip, r: dict, lines: list[Line], s: Settings, duration: 
         end = min(duration, max(end, start + min_len))
     clip.start, clip.end = round(start, 2), round(end, 2)
     clip.score = float(min(10, max(1, _int(r.get("score"), 1))))
-    clip.title = str(r.get("title", "")).strip()[:100]
-    clip.description = str(r.get("description", "")).strip()
-    clip.hashtags = _hashtags(r.get("hashtags", []))
-    clip.ai_reason = str(r.get("reason", "")).strip()
+    clip.title = str(r.get("title") or "").strip()[:100]
+    clip.description = str(r.get("description") or "").strip()
+    clip.hashtags = _hashtags(r.get("hashtags") or [])
+    clip.ai_reason = str(r.get("reason") or "").strip()
     if not r.get("is_highlight", True):
         clip.score = min(clip.score, 3.0)
 
