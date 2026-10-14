@@ -15,7 +15,9 @@ from clipforge.core.errors import Cancelled, ClipForgeError
 from clipforge.core.log import get_logger
 from clipforge.core.providers import STT_PROVIDERS
 from clipforge.core.settings import Settings
-from clipforge.pipeline import importer, render
+from clipforge.pipeline import audio, chat, importer, render
+from clipforge.pipeline.chat import load_chat
+from clipforge.pipeline.triggers import Hit
 from clipforge.pipeline.clips import STATUS_APPROVED, STATUS_EXPORTED, STATUS_REJECTED, Clip, candidates_from_hits
 from clipforge.pipeline.llm import CostEstimate, Scorer, estimate_cost
 from clipforge.pipeline.project import Project
@@ -60,6 +62,7 @@ class Pipeline:
         if not media["has_audio"]:
             raise ClipForgeError("Das Video hat keine Tonspur.", "Ohne Ton kann kein Transkript erstellt werden.")
         proj.set_source(src, media)
+        proj.state["offset"] = section[0] if (section and importer.is_url(ref)) else 0.0
         proj.mark("import")
         self.progress("import", 1.0, f"Importiert: {src.title}")
         return proj
@@ -93,10 +96,43 @@ class Pipeline:
         proj.mark("transcribe")
 
     # 3. Trigger + Kandidaten
+    def chat_hits(self, proj: Project) -> list[Hit]:
+        src = proj.source
+        if not self.s.use_chat or not src or not src.url:
+            return []
+        self.progress("chat", 0.0, f"Lade {src.platform}-Chat …")
+        try:
+            msgs = load_chat(src.url, proj.media["duration"], proj.dir, offset=proj.offset,
+                             on_progress=lambda f, m: self.progress("chat", f, m), cancel=self.cancel)
+        except ClipForgeError as e:
+            log.warning("Chat übersprungen: %s | %s", e, e.detail)
+            self.progress("chat", 1.0, f"Chat übersprungen: {e.message}")
+            return []
+        if msgs is None:
+            return []
+        peaks = chat.find_peaks(msgs, proj.media["duration"], self.s.chat_reactions,
+                                sensitivity=self.s.chat_sensitivity, min_count=self.s.chat_min_messages)
+        self.progress("chat", 1.0, f"Chat: {len(msgs)} Nachrichten, {len(peaks)} Spitzen")
+        # Der Chat reagiert einige Sekunden nach dem Ereignis
+        return [Hit("Chat", "Chat-Spitze", "", p.time, p.start, 100.0, pre=35.0, post=3.0, text=p.reason)
+                for p in peaks]
+
+    def audio_hits(self, proj: Project) -> list[Hit]:
+        if not self.s.use_audio_peaks:
+            return []
+        levels = audio.measure_levels(proj.source.path, proj.media["duration"], proj.dir,
+                                      on_progress=lambda f, m: self.progress("audio", f, m), cancel=self.cancel,
+                                      ffmpeg_path=self.s.ffmpeg_path)
+        peaks = audio.find_peaks(levels, above_db=self.s.audio_above_db, min_level_db=self.s.audio_min_level_db)
+        self.progress("audio", 1.0, f"Lautstärke: {len(peaks)} Spitzen")
+        return [Hit("Lautstärke", "Lautstärkespitze", "", p.time + 2.0, p.start, 100.0, pre=25.0, post=6.0,
+                    text=p.reason) for p in peaks]
+
     def find_clips(self, proj: Project) -> list[Clip]:
         self.progress("triggers", 0.0, "Suche Trigger …")
         words = proj.load_words()
-        hits = find_hits(words, self.s.all_triggers())
+        hits = find_hits(words, self.s.all_triggers()) + self.chat_hits(proj) + self.audio_hits(proj)
+        hits.sort(key=lambda h: h.time)
         clips = candidates_from_hits(hits, proj.media["duration"], self.s)
         # Bereits bearbeitete Clips (Status, Titel, Layout) behalten
         old = {round(c.trigger_time, 1): c for c in proj.load_clips()}

@@ -58,9 +58,14 @@ class Hit:
     start: float
     score: float  # Ähnlichkeit 0–100
     trigger: Trigger | None = None
+    pre: float | None = None  # eigene Vor-/Nachlaufzeit (Chat, Lautstärke)
+    post: float | None = None
+    text: str = ""  # fertige Begründung (Chat, Lautstärke)
 
     @property
     def reason(self) -> str:
+        if self.text:
+            return self.text
         if self.matched and normalize(self.matched) != normalize(self.phrase):
             return f"{self.kind}: „{self.matched}“ (≈ {self.phrase}, {self.score:.0f} %)"
         return f"{self.kind}: „{self.phrase}“"

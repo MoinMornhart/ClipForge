@@ -110,6 +110,35 @@ def cmd_key(args) -> int:
     return 0
 
 
+def cmd_keyword(args) -> int:
+    from clipforge.core.settings import Trigger
+
+    s = Settings.load()
+    if args.action == "list":
+        print("Sprachbefehle:")
+        for t in s.voice_triggers:
+            print(f"  {'✓' if t.enabled else '–'} {t.phrase:<32} Ähnlichkeit ≥ {t.threshold} %")
+        print("Eigene Schlüsselbegriffe:")
+        for t in s.custom_keywords or []:
+            print(f"  {'✓' if t.enabled else '–'} {t.phrase:<32} Ähnlichkeit ≥ {t.threshold} %, "
+                  f"{t.pre:.0f} s davor, {t.post:.0f} s danach")
+        if not s.custom_keywords:
+            print("  (keine)  →  clipforge keyword add \"was geht ab\"")
+        return 0
+    if not args.phrase:
+        print("Bitte einen Begriff angeben.", file=sys.stderr)
+        return 2
+    phrase = args.phrase.strip()
+    s.custom_keywords = [t for t in s.custom_keywords if t.phrase.lower() != phrase.lower()]
+    if args.action == "add":
+        s.custom_keywords.append(Trigger(phrase, threshold=args.threshold, pre=args.pre, post=args.post))
+        print(f"„{phrase}“ hinzugefügt.")
+    else:
+        print(f"„{phrase}“ gelöscht.")
+    s.save()
+    return 0
+
+
 def cmd_models(args) -> int:
     from clipforge.pipeline.llm import list_models
 
@@ -149,6 +178,12 @@ def main(argv: list[str] | None = None) -> int:
     k.add_argument("provider", nargs="?")
     m = sub.add_parser("models", help="verfügbare Modelle eines Anbieters anzeigen")
     m.add_argument("provider", nargs="?")
+    kw = sub.add_parser("keyword", help="eigene Schlüsselbegriffe verwalten")
+    kw.add_argument("action", choices=["list", "add", "delete"])
+    kw.add_argument("phrase", nargs="?")
+    kw.add_argument("--threshold", type=int, default=80, help="Mindestähnlichkeit in %% (Standard 80)")
+    kw.add_argument("--pre", type=float, default=30.0, help="Sekunden vor dem Begriff")
+    kw.add_argument("--post", type=float, default=4.0, help="Sekunden nach dem Begriff")
     args = ap.parse_args(argv)
     setup_logging(args.verbose)
 
@@ -159,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_key(args)
         if args.cmd == "models":
             return cmd_models(args)
+        if args.cmd == "keyword":
+            return cmd_keyword(args)
     except ClipForgeError as e:
         print(f"Fehler: {e}", file=sys.stderr)
         return 1

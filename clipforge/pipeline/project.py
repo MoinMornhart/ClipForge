@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 
@@ -84,6 +85,14 @@ class Project:
         self.state["source"] = {**asdict(src), "path": str(src.path)}
         self.state["media"] = media
         self.save()
+
+    @property
+    def offset(self) -> float:
+        """Start des geladenen Ausschnitts im Original-VOD (0 bei vollständigen VODs)."""
+        if "offset" in self.state:
+            return float(self.state["offset"])
+        m = re.search(r"#(\d+)-(\d+)$", self.state.get("ref", ""))
+        return float(m.group(1)) if m else 0.0
 
     @property
     def media(self) -> dict:

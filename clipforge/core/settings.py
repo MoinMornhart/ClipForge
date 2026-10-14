@@ -49,8 +49,15 @@ class Settings:
     # Trigger
     voice_triggers: list[Trigger] = field(default_factory=lambda: [Trigger(p) for p in DEFAULT_VOICE_TRIGGERS])
     custom_keywords: list[Trigger] = field(default_factory=list)
-    use_chat: bool = False
-    use_audio_peaks: bool = False
+    use_chat: bool = True  # nur bei Twitch-/Kick-Links
+    chat_reactions: list[str] = field(default_factory=lambda: [
+        "KEKW", "LUL", "OMEGALUL", "LMAO", "LOL", "xD", "PogChamp", "Pog", "POGGERS", "!clip", "clip", "WTF",
+        "monkaS", "😂", "💀", "🔥", "HAHAHA", "haha"])
+    chat_sensitivity: float = 3.0  # kleiner = mehr Chat-Spitzen
+    chat_min_messages: int = 8  # Mindestanzahl Nachrichten in 10 s
+    use_audio_peaks: bool = True
+    audio_above_db: float = 10.0  # so viel lauter als üblich
+    audio_min_level_db: float = -22.0
 
     # Clips
     min_clip_seconds: float = 15.0

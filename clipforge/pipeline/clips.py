@@ -49,8 +49,8 @@ def candidates_from_hits(hits: list[Hit], duration: float, s: Settings) -> list[
     Die KI-Bewertung (Meilenstein 2) verfeinert die Grenzen danach inhaltlich."""
     raw: list[Clip] = []
     for h in hits:
-        pre = h.trigger.pre if h.trigger else 30.0
-        post = h.trigger.post if h.trigger else 4.0
+        pre = h.pre if h.pre is not None else (h.trigger.pre if h.trigger else 30.0)
+        post = h.post if h.post is not None else (h.trigger.post if h.trigger else 4.0)
         start = max(0.0, h.start - pre)
         end = min(duration, h.time + post)
         if end - start < s.min_clip_seconds:
