@@ -64,7 +64,7 @@ class Pipeline:
         if not media["has_audio"]:
             raise ClipForgeError("Das Video hat keine Tonspur.", "Ohne Ton kann kein Transkript erstellt werden.")
         proj.set_source(src, media)
-        proj.state["offset"] = section[0] if (section and importer.is_url(ref)) else 0.0
+        proj.state["offset"] = src.offset if (section and importer.is_url(ref)) else 0.0
         proj.mark("import")
         self.progress("import", 1.0, f"Importiert: {src.title}")
         return proj

@@ -36,8 +36,11 @@ where ffmpeg >nul 2>nul || if not exist "%LOCALAPPDATA%\Microsoft\WinGet\Links\f
   winget install --id Gyan.FFmpeg -e --accept-source-agreements --accept-package-agreements
 )
 
+echo  Lege Desktop-Verknüpfung an ...
+powershell -NoProfile -Command "$s=(New-Object -ComObject WScript.Shell).CreateShortcut([Environment]::GetFolderPath('Desktop')+'\ClipForge.lnk'); $s.TargetPath='%VENV%\Scripts\pythonw.exe'; $s.Arguments='-m clipforge'; $s.WorkingDirectory='%~dp0'; $s.IconLocation='%~dp0clipforge\ui\assets\icon.ico'; $s.Description='ClipForge – VODs zu Kurzclips'; $s.Save()" >nul 2>nul
+
 echo.
 "%VENV%\Scripts\python.exe" -m clipforge check
 echo.
-echo  Fertig. Starte ClipForge mit start.bat
+echo  Fertig. Starte ClipForge über das Desktop-Symbol oder mit start.bat
 pause

@@ -12,6 +12,17 @@ def test_url_parsing():
     assert kick_video_uuid("https://kick.com/xqc") is None
 
 
+def test_parse_m3u8_segments_and_offsets():
+    from clipforge.pipeline.importer import parse_m3u8
+
+    text = "#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.000,\n0.ts\n#EXTINF:10.000,\n1.ts\n#EXTINF:4.5,\n2.ts\n"
+    segs, init, enc = parse_m3u8(text, "https://cdn.example/vod/index.m3u8")
+    assert [s[0] for s in segs] == [0.0, 10.0, 20.0] and segs[2][1] == 4.5
+    assert segs[1][2] == "https://cdn.example/vod/1.ts" and init is None and not enc
+    _, _, enc2 = parse_m3u8('#EXT-X-KEY:METHOD=AES-128,URI="k"\n#EXTINF:10,\na.ts\n', "https://x/")
+    assert enc2
+
+
 def test_chat_peak_found_with_reactions():
     rnd = random.Random(1)
     msgs = [ChatMessage(rnd.uniform(0, 1200), "hallo") for _ in range(600)]  # ~0,5 pro Sekunde

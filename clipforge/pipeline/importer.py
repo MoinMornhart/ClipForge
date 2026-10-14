@@ -26,6 +26,7 @@ class Source:
     url: str = ""
     vod_id: str = ""
     platform: str = "Datei"  # Twitch | Kick | YouTube | Web | Datei
+    offset: float = 0.0  # Start der Datei im Original-VOD (bei Ausschnitten, auf Segmentgrenze genau)
 
 
 PLATFORMS = {
@@ -60,6 +61,100 @@ def from_local(path: str | Path) -> Source:
 
     date = dt.date.fromtimestamp(p.stat().st_mtime).isoformat()
     return Source(path=p, title=p.stem, streamer="", date=date)
+
+
+def _fetch(url: str, headers: dict, timeout: int = 30, retries: int = 5) -> bytes:
+    import time
+    import urllib.request
+
+    last = None
+    for i in range(retries):
+        try:
+            req = urllib.request.Request(url, headers=headers or {})
+            with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 – nur http(s)-Links von yt-dlp
+                return r.read()
+        except OSError as e:
+            last = e
+            time.sleep(1 + i)
+    raise ClipForgeError("Ein Videostück konnte nicht geladen werden.", "Prüfe die Internetverbindung.", str(last))
+
+
+def parse_m3u8(text: str, base: str) -> tuple[list[tuple[float, float, str]], str | None, bool]:
+    """Liefert ([(start, dauer, url)], init_url, verschlüsselt)."""
+    from urllib.parse import urljoin
+
+    segs, t, dur, init, enc = [], 0.0, None, None, False
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("#EXTINF:"):
+            dur = float(line[8:].split(",")[0])
+        elif line.startswith("#EXT-X-MAP:"):
+            m = re.search(r'URI="([^"]+)"', line)
+            if m:
+                init = urljoin(base, m.group(1))
+        elif line.startswith("#EXT-X-KEY:") and "METHOD=NONE" not in line:
+            enc = True
+        elif line and not line.startswith("#") and dur is not None:
+            segs.append((t, dur, urljoin(base, line)))
+            t += dur
+            dur = None
+    return segs, init, enc
+
+
+def hls_section(playlist_url: str, headers: dict, start: float, end: float, out: Path,
+                on_progress: Callable[[float, str], None] | None = None, cancel: threading.Event | None = None,
+                workers: int = 8, ffmpeg_path: str = "") -> float:
+    """Lädt nur die HLS-Segmente zwischen start und end, parallel, und fügt sie ohne Neukodierung zusammen.
+
+    FFmpeg würde den Stream sonst bis zur Startstelle durchlesen – bei Stunde 5 eines VODs sind das Gigabytes.
+    Liefert den tatsächlichen Start (Segmentgrenze) im Original-VOD.
+    """
+    import shutil
+    import tempfile
+    from concurrent.futures import ThreadPoolExecutor
+
+    from clipforge.core import ffmpeg as ff
+
+    segs, init, enc = parse_m3u8(_fetch(playlist_url, headers).decode("utf-8", "replace"), playlist_url)
+    if enc:
+        raise ClipForgeError("Der Stream ist verschlüsselt.", "Lade das ganze VOD ohne Ausschnitt.")
+    pick = [s for s in segs if s[0] + s[1] > start and s[0] < end]
+    if not pick:
+        raise ClipForgeError("Der gewählte Ausschnitt liegt außerhalb des VODs.",
+                             f"Das VOD ist {segs[-1][0] + segs[-1][1]:.0f} s lang." if segs else "")
+    tmp = Path(tempfile.mkdtemp(prefix="cf_hls_", dir=out.parent))
+    done = [0]
+    lock = threading.Lock()
+
+    def get(i_seg):
+        i, (_, _, url) = i_seg
+        if cancel and cancel.is_set():
+            raise Cancelled()
+        data = _fetch(url, headers)
+        (tmp / f"{i:06d}.seg").write_bytes(data)
+        with lock:
+            done[0] += 1
+            if on_progress:
+                on_progress(done[0] / len(pick) * 0.95, f"Lade Ausschnitt: {done[0]}/{len(pick)} Stücke")
+
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            list(ex.map(get, enumerate(pick)))
+        joined = tmp / ("joined.mp4" if init else "joined.ts")
+        with open(joined, "wb") as fo:
+            if init:
+                fo.write(_fetch(init, headers))
+            for i in range(len(pick)):
+                fo.write((tmp / f"{i:06d}.seg").read_bytes())
+        ff.run(["-i", str(joined), "-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy",
+                *(["-bsf:a", "aac_adtstoasc"] if not init else []), "-movflags", "+faststart", str(out)],
+               cancel=cancel, configured=ffmpeg_path, error_message="Der Ausschnitt konnte nicht zusammengefügt werden.")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if on_progress:
+        on_progress(1.0, "Ausschnitt geladen")
+    log.info("HLS-Ausschnitt %s–%s s: %d Stücke, Start %.2f s", start, end, len(pick), pick[0][0])
+    return pick[0][0]
 
 
 def download(
@@ -120,10 +215,22 @@ def download(
             import curl_cffi  # noqa: F401  Kick steht hinter Cloudflare, yt-dlp braucht dafür curl_cffi
         except ImportError as e:
             raise ClipForgeError("Für Kick-Links fehlt ein Zusatzpaket.", "Führe install.bat erneut aus.") from e
+    offset = section[0] if section else 0.0
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            path = Path(ydl.prepare_filename(info)).with_suffix(".mp4")
+            if section:
+                info = ydl.extract_info(url, download=False)
+                fmts = info.get("requested_formats") or [info]
+                path = Path(ydl.prepare_filename(info)).with_suffix(".mp4")
+                if len(fmts) == 1 and str(fmts[0].get("protocol", "")).startswith("m3u8") and not path.exists():
+                    # schneller Weg: nur die Segmente des Ausschnitts laden
+                    offset = hls_section(fmts[0]["url"], fmts[0].get("http_headers") or {}, section[0], section[1],
+                                         path, on_progress, cancel)
+                elif not path.exists():
+                    info = ydl.extract_info(url, download=True)
+            else:
+                info = ydl.extract_info(url, download=True)
+                path = Path(ydl.prepare_filename(info)).with_suffix(".mp4")
     except Cancelled:
         raise
     except Exception as e:  # yt-dlp wirft viele eigene Typen
@@ -155,4 +262,4 @@ def download(
     date = f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else ""
     log.info("VOD geladen: %s", path)
     return Source(path=path, title=info.get("title") or path.stem, streamer=info.get("uploader") or "",
-                  date=date, url=url, vod_id=str(info.get("id") or ""), platform=platform)
+                  date=date, url=url, vod_id=str(info.get("id") or ""), platform=platform, offset=offset)

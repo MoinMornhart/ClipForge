@@ -105,6 +105,15 @@ def main() -> int:
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setApplicationName("ClipForge")
+    from pathlib import Path
+
+    app.setWindowIcon(QIcon(str(Path(__file__).parent / "assets" / "icon.ico")))
+    try:  # eigenes Taskleisten-Symbol statt des Python-Symbols
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ClipForge.App")
+    except (AttributeError, OSError):
+        pass
     theme.apply(app)
     w = MainWindow()
     w.show()
