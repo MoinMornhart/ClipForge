@@ -89,7 +89,7 @@ def plan(job: RenderJob, media: dict, work: Path) -> tuple[str, str]:
     fullcam = bool(cam_info and cam_info.mode == "fullcam")
     has_hand = bool(cam_info and cam_info.handcam)
     layout = layouts.resolve_layout(job.layout, has_cam, fullcam, has_hand)
-    li = layouts.LayoutInput(sw, sh, job.fps)
+    li = layouts.LayoutInput(sw, sh, job.fps, fullcam=fullcam and not has_cam)
     clip = job.clip
     if has_cam:
         li.cam = fc.Rect.from_norm(cam_info.cam, sw, sh)

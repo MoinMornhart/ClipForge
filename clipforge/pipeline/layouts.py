@@ -57,8 +57,9 @@ def resolve_layout(layout: str, has_cam: bool, fullcam: bool, has_hand: bool = F
         layout = "stack" if layout == "face_hand" else "blur"
     if layout == "face_hand" and not has_cam:
         return "hand"
-    if layout in NEEDS_CAM and not has_cam and not fullcam:
-        return "blur"  # ohne Facecam keine Facecam-Layouts
+    if layout in NEEDS_CAM and not has_cam:
+        # ohne Facecam-Fenster: bei reinem Kamerabild (Vollbild-Kamera) groß die Kamera, sonst Gameplay mittig
+        return "cam" if fullcam else "blur"
     return layout
 
 
