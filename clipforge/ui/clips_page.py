@@ -56,11 +56,19 @@ class ClipRow(QWidget):
         lay.addWidget(self.thumb)
         mid = QVBoxLayout()
         mid.setSpacing(2)
-        title = QLabel(clip.title or "Ohne Titel")
+        # noch ohne KI-Titel: Auslöser und Zeitpunkt statt „Ohne Titel“
+        kind = clip.reasons[0].split(":")[0].strip() if clip.reasons else "Clip"
+        t = int(clip.trigger_time)
+        at = f"{t // 3600}:{t % 3600 // 60:02d}:{t % 60:02d}" if t >= 3600 else f"{t // 60}:{t % 60:02d}"
+        title = QLabel(clip.title or f"{kind} bei {at}")
         title.setStyleSheet("font-weight:700;")
         meta = QLabel(f"{fmt_time(clip.start)} – {fmt_time(clip.end)} · {clip.duration:.0f} s")
         meta.setObjectName("muted")
-        reason = QLabel("; ".join(clip.reasons)[:90])
+        full = "; ".join(clip.reasons)
+        if not clip.title and clip.reasons and ":" in clip.reasons[0]:  # Auslöser steht schon im Titel
+            full = "; ".join([clip.reasons[0].split(":", 1)[1].strip(), *clip.reasons[1:]])
+        reason = QLabel(full if len(full) <= 42 else full[:41] + "…")
+        reason.setToolTip(full)
         reason.setObjectName("muted")
         reason.setStyleSheet("font-size:8.5pt;")
         for w in (title, meta, reason):
@@ -427,7 +435,25 @@ class ClipsPage(QWidget):
         QShortcut(QKeySequence("Ctrl+Return"), self, activated=lambda: self._set_status(STATUS_APPROVED))
         QShortcut(QKeySequence("Ctrl+Delete"), self, activated=lambda: self._set_status(STATUS_REJECTED))
         QShortcut(QKeySequence("Ctrl+Space"), self, activated=self._toggle_play)
-        split.addWidget(right)
+        # ohne ausgewählten Clip: Hinweis statt leerem Player und ausgegrauten Feldern
+        self.right_stack = QStackedWidget()
+        none = QWidget()
+        nl = QVBoxLayout(none)
+        nl.setAlignment(Qt.AlignCenter)
+        ni = QLabel("✂")
+        ni.setStyleSheet(f"font-size:40pt; color:{theme.ACCENT};")
+        self.none_title = QLabel("Keine Clips in dieser Ansicht")
+        self.none_title.setObjectName("h2")
+        self.none_text = QLabel("")
+        self.none_text.setObjectName("muted")
+        self.none_text.setWordWrap(True)
+        self.none_text.setMaximumWidth(460)
+        for w in (ni, self.none_title, self.none_text):
+            w.setAlignment(Qt.AlignCenter)
+            nl.addWidget(w, 0, Qt.AlignHCenter)
+        self.right_stack.addWidget(none)
+        self.right_stack.addWidget(right)
+        split.addWidget(self.right_stack)
         split.setStretchFactor(1, 1)
         from PySide6.QtWidgets import QStackedWidget as _Stack
 
@@ -560,11 +586,18 @@ class ClipsPage(QWidget):
             self.list.setCurrentRow(row_sel)
             self._select(row_sel)
         else:
-            it = QListWidgetItem("Keine Clips in dieser Ansicht.\n\nTipp: In den Einstellungen unter „Trigger“\n"
-                                 "eigene Begriffe ergänzen oder die Chat-\nEmpfindlichkeit senken, dann neu analysieren.")
+            hidden = sum(c.status == STATUS_REJECTED for c in self.clips)
+            it = QListWidgetItem("Keine Clips in dieser Ansicht.")
             it.setFlags(Qt.NoItemFlags)
-            it.setSizeHint(QSize(360, 120))
+            it.setSizeHint(QSize(360, 56))
             self.list.addItem(it)
+            if hidden and not self.show_rejected.isChecked():
+                self.none_title.setText(f"{hidden} verworfene Clips ausgeblendet")
+                self.none_text.setText("Oben „Verworfene zeigen“ anhaken, um sie wieder zu sehen.")
+            else:
+                self.none_title.setText("Keine Clips in dieser Ansicht")
+                self.none_text.setText("In den Einstellungen unter „Trigger“ eigene Begriffe ergänzen oder die "
+                                       "Chat-Empfindlichkeit senken, dann das VOD neu analysieren.")
             self.cur = None
             self.state_lbl.setText("Kein Clip ausgewählt")
             self._enable_editor(False)
@@ -573,6 +606,9 @@ class ClipsPage(QWidget):
         for w in (self.title_edit, self.desc_edit, self.tags_edit, self.transcript, self.approve_btn, self.reject_btn,
                   self.layout_box, self.preview_btn, self.play_btn, self.range, *self.nudge_btns):
             w.setEnabled(on)
+        self.right_stack.setCurrentIndex(1 if on else 0)
+        if not on:
+            self.player.pause()
 
     # ------------------------------------------------------------------ Auswahl + Bearbeiten
     def _select(self, row: int):

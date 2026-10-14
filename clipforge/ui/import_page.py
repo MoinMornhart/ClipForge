@@ -70,7 +70,8 @@ class ProjectCard(QFrame):
         t.setStyleSheet("font-weight:700; padding:0 12px;")
         t.setMaximumWidth(266)
         t.setText(src.title if len(src.title) <= 34 else src.title[:33].rstrip() + "…")
-        meta = QLabel(f"{src.streamer or 'Datei'} · {src.platform} · {fmt_time(p.media.get('duration', 0))}")
+        who = f"{src.streamer} · {src.platform}" if src.streamer else "Lokale Datei"
+        meta = QLabel(f"{who} · {fmt_time(p.media.get('duration', 0))}")
         meta.setTextFormat(Qt.PlainText)
         meta.setObjectName("muted")
         meta.setStyleSheet("padding:0 12px;")
