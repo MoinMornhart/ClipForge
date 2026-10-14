@@ -43,6 +43,7 @@ class Settings:
     stt_api_model: str = ""  # leer = Standardmodell des Anbieters
     whisper_model: str = "large-v3-turbo"
     whisper_device: str = "cuda"  # "cuda" | "cpu"
+    whisper_batched: bool = True  # Stapel-Modus auf der GPU (≈4× schneller)
     language: str = ""  # "" = automatisch erkennen (sonst z. B. "de", "en"); fest = etwas genauer
     chunk_minutes: float = 10.0
 

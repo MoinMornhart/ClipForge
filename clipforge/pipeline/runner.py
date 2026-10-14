@@ -74,7 +74,7 @@ class Pipeline:
         if self._backend is None:
             prov = STT_PROVIDERS.get(self.s.transcription_backend)
             if prov is None or prov.id == "local":
-                self._backend = LocalWhisper(self.s.whisper_model, self.s.whisper_device)
+                self._backend = LocalWhisper(self.s.whisper_model, self.s.whisper_device, self.s.whisper_batched)
             else:
                 key = secrets.get_key(prov.id)
                 if not key:
