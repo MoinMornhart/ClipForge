@@ -88,16 +88,24 @@ class Pipeline:
         src = proj.source
         if src and src.path.exists() and proj.done("import"):
             return proj
-        if importer.is_url(ref):
-            platform = importer.platform_of(ref)
-            self.progress("import", 0.0, f"Lade VOD von {platform} herunter …")
-            src = importer.download(ref, self.s.download_dir, section=section,
-                                    on_progress=lambda f, m: self.progress("import", f, m), cancel=self.cancel)
-        else:
-            src = importer.from_local(ref)
-        media = ffmpeg.probe(src.path, self.s.ffmpeg_path)
-        if not media["has_audio"]:
-            raise ClipForgeError("Das Video hat keine Tonspur.", "Ohne Ton kann kein Transkript erstellt werden.")
+        try:
+            if importer.is_url(ref):
+                platform = importer.platform_of(ref)
+                self.progress("import", 0.0, f"Lade VOD von {platform} herunter …")
+                src = importer.download(ref, self.s.download_dir, section=section,
+                                        on_progress=lambda f, m: self.progress("import", f, m), cancel=self.cancel)
+            else:
+                src = importer.from_local(ref)
+            media = ffmpeg.probe(src.path, self.s.ffmpeg_path)
+            if not media["has_audio"]:
+                raise ClipForgeError("Das Video hat keine Tonspur.", "Ohne Ton kann kein Transkript erstellt werden.")
+        except ClipForgeError:
+            # fehlgeschlagener erster Import: kein leeres Projekt in „Zuletzt bearbeitet“ zurücklassen
+            if not proj.state.get("source"):
+                import shutil
+
+                shutil.rmtree(proj.dir, ignore_errors=True)
+            raise
         proj.set_source(src, media)
         proj.state["offset"] = src.offset if (section and importer.is_url(ref)) else 0.0
         proj.mark("import")

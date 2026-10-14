@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from clipforge.core.log import get_logger
+from clipforge.core.jsonio import write_json
 from clipforge.core.paths import app_dir, default_download_dir, default_export_dir
 
 log = get_logger("settings")
@@ -113,18 +114,37 @@ class Settings:
             return cls()
         try:
             raw = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
-            log.warning("Einstellungen konnten nicht gelesen werden, nutze Standardwerte: %s", e)
+            if not isinstance(raw, dict):
+                raise ValueError("kein Objekt")
+            known = {f.name for f in fields(cls)}
+            data = {k: v for k, v in raw.items() if k in known}
+            tkeys = {f.name for f in fields(Trigger)}
+            for key in ("voice_triggers", "custom_keywords"):
+                if key in data:
+                    data[key] = [Trigger(**{k: v for k, v in t.items() if k in tkeys}) for t in data[key]
+                                 if isinstance(t, dict) and t.get("phrase")]
+            s = cls(**data)
+        except (OSError, ValueError, TypeError) as e:
+            # kaputte Datei sichern statt beim nächsten Speichern Profile/Trigger endgültig zu verlieren
+            bak = p.with_suffix(".json.bak")
+            try:
+                p.replace(bak)
+            except OSError:
+                pass
+            log.warning("Einstellungen nicht lesbar (gesichert als %s), nutze Standardwerte: %s", bak.name, e)
             return cls()
-        known = {f.name for f in fields(cls)}
-        data = {k: v for k, v in raw.items() if k in known}
-        for key in ("voice_triggers", "custom_keywords"):
-            if key in data:
-                data[key] = [Trigger(**t) for t in data[key]]
-        return cls(**data)
+        if not str(s.export_dir).strip():
+            s.export_dir = str(default_export_dir())
+        if not str(s.download_dir).strip():
+            s.download_dir = str(default_download_dir())
+        return s
 
     def save(self) -> None:
-        self.path().write_text(json.dumps(asdict(self), indent=2, ensure_ascii=False), encoding="utf-8")
+        if not str(self.export_dir).strip():  # leeres Feld: nie ins aktuelle Arbeitsverzeichnis exportieren
+            self.export_dir = str(default_export_dir())
+        if not str(self.download_dir).strip():
+            self.download_dir = str(default_download_dir())
+        write_json(self.path(), asdict(self), indent=2)
 
     @property
     def effective_max_seconds(self) -> float:

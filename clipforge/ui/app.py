@@ -165,9 +165,13 @@ class MainWindow(QMainWindow):
             e.ignore()
             return
         if busy:
+            # alles abbrechen (Analyse, Export, Vorschau) und kurz auf saubere Enden warten
+            from clipforge.core import ffmpeg
+            from clipforge.ui.worker import cancel_all
+
             self.import_page.cancel()
-            if self.import_page.task:
-                self.import_page.task.wait(4000)
+            cancel_all(wait_ms=4000)
+            ffmpeg.kill_all()
         crashguard.end_session()
         e.accept()
 
@@ -176,6 +180,19 @@ class _ErrorBridge(QObject):
     """Bringt abgefangene Fehler aus beliebigen Threads sicher in den Fenster-Thread."""
 
     error = Signal(str, str)
+
+
+def _clean_temp() -> None:
+    """Vorschau-Dateien früherer Sitzungen aus dem Temp-Ordner entfernen."""
+    import tempfile
+    from pathlib import Path
+
+    for pat in ("clipforge_vorschau_*.mp4", "clipforge_fc_preview_*.png"):
+        for f in Path(tempfile.gettempdir()).glob(pat):
+            try:
+                f.unlink()
+            except OSError:  # gerade im Player geöffnet
+                pass
 
 
 def main(initial: str | None = None) -> int:
@@ -194,6 +211,7 @@ def main(initial: str | None = None) -> int:
     except (AttributeError, OSError):
         pass
     theme.apply(app)
+    _clean_temp()
     crashed = crashguard.begin_session()
     w = MainWindow()
     bridge = _ErrorBridge()

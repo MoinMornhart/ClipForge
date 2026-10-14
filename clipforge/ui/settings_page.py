@@ -494,7 +494,10 @@ class SettingsPage(QWidget):
 
     def showEvent(self, e):
         super().showEvent(e)
-        self._fill_profiles()  # Profile können inzwischen im Facecam-Dialog angelegt worden sein
+        self._fill_profiles()
+        fresh = Settings.load()  # Exportordner kann unter Clips → „Ordner …“ geändert worden sein
+        self.export_dir.setText(fresh.export_dir)
+        self.download_dir.setText(fresh.download_dir)  # Profile können inzwischen im Facecam-Dialog angelegt worden sein
 
     def _fill_profiles(self):
         profs = Settings.load().facecam_profiles

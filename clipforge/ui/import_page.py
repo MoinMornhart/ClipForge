@@ -233,7 +233,7 @@ class ImportPage(QWidget):
         total, n = Project.total_cost_all()
         self.total_cost.setText(f"API-Kosten gesamt: {total:.2f} $ für {n} VOD(s)".replace(".", ","))
         missing = []
-        projects = [p for p in Project.all()[:24] if p.source]
+        projects = [p for p in Project.all() if p.source][:24]
         if not projects:
             it = QListWidgetItem("Noch keine VODs. Füge oben einen Link ein oder ziehe eine Datei hinein.")
             it.setFlags(Qt.NoItemFlags)

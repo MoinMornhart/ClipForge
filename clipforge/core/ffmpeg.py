@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import shutil
@@ -110,6 +111,25 @@ def nvenc_available(configured: str = "") -> bool:
     return ok
 
 
+_PROCS: set[subprocess.Popen] = set()
+_PROCS_LOCK = threading.Lock()
+
+
+def kill_all() -> None:
+    """Alle noch laufenden FFmpeg-Prozesse beenden (beim Schließen von ClipForge) – sonst rendern sie
+    unsichtbar weiter."""
+    with _PROCS_LOCK:
+        procs = list(_PROCS)
+    for p in procs:
+        try:
+            p.kill()
+        except OSError:
+            pass
+
+
+atexit.register(kill_all)
+
+
 def run(
     args: list[str],
     duration: float | None = None,
@@ -126,22 +146,29 @@ def run(
     log.debug("ffmpeg %s", subprocess.list2cmdline(cmd[1:]))
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
                             errors="replace", creationflags=_NO_WINDOW, cwd=str(cwd) if cwd else None)
+    with _PROCS_LOCK:
+        _PROCS.add(proc)
     err_lines: list[str] = []
     t = threading.Thread(target=lambda: err_lines.extend(proc.stderr), daemon=True)
     t.start()
     assert proc.stdout
-    for line in proc.stdout:
-        if cancel and cancel.is_set():
+    try:
+        for line in proc.stdout:
+            if cancel and cancel.is_set():
+                raise Cancelled()
+            if on_progress and duration and line.startswith("out_time_us="):
+                try:
+                    us = int(line.split("=", 1)[1])
+                    on_progress(min(1.0, us / 1e6 / duration))
+                except ValueError:
+                    pass
+        proc.wait()
+    finally:
+        if proc.poll() is None:  # Abbruch oder Fehler im Fortschritt-Callback
             proc.kill()
             proc.wait()
-            raise Cancelled()
-        if on_progress and duration and line.startswith("out_time_us="):
-            try:
-                us = int(line.split("=", 1)[1])
-                on_progress(min(1.0, us / 1e6 / duration))
-            except ValueError:
-                pass
-    proc.wait()
+        with _PROCS_LOCK:
+            _PROCS.discard(proc)
     t.join(timeout=2)
     if proc.returncode != 0:
         stderr = "".join(err_lines[-30:])

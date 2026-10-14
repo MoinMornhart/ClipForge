@@ -93,3 +93,18 @@ class Task(QObject):
 
 def running_tasks() -> int:
     return sum(1 for t in _RUNNING if t.is_running())
+
+
+def cancel_all(wait_ms: int = 0) -> None:
+    """Alle laufenden Tasks abbrechen; optional insgesamt bis wait_ms auf ihr Ende warten."""
+    import time
+
+    tasks = [t for t in list(_RUNNING) if t.is_running()]
+    for t in tasks:
+        t.cancel.set()
+    deadline = time.monotonic() + wait_ms / 1000
+    for t in tasks:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        t.wait(int(left * 1000))
