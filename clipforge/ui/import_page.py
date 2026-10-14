@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QCheckBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
                                QVBoxLayout, QWidget)
@@ -42,6 +43,43 @@ class StepPill(QLabel):
         mark = {"todo": "○", "active": "◐", "done": "●", "skip": "–"}[state]
         self.setText(f"{mark}  {self.text().split('  ', 1)[-1]}")
         self.setStyleSheet(f"background:{bg}; color:{fg}; border-radius:12px; padding:4px 10px; font-weight:600;")
+
+
+class ProjectCard(QFrame):
+    """Karte für ein bearbeitetes VOD: Vorschaubild, Titel, Eckdaten."""
+
+    def __init__(self, p: Project, cover):
+        super().__init__()
+        self.setObjectName("card")
+        self.setCursor(Qt.PointingHandCursor)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 10)
+        lay.setSpacing(4)
+        img = QLabel()
+        img.setFixedSize(266, 150)
+        img.setAlignment(Qt.AlignCenter)
+        img.setStyleSheet("background:#0b0d11; border-top-left-radius:12px; border-top-right-radius:12px;")
+        if cover.exists():
+            img.setPixmap(QPixmap(str(cover)).scaled(266, 150, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+        else:
+            img.setText("🎬")
+        lay.addWidget(img)
+        src = p.source
+        t = QLabel(src.title)
+        t.setTextFormat(Qt.PlainText)
+        t.setStyleSheet("font-weight:700; padding:0 12px;")
+        t.setMaximumWidth(266)
+        t.setText(src.title if len(src.title) <= 34 else src.title[:33].rstrip() + "…")
+        meta = QLabel(f"{src.streamer or 'Datei'} · {src.platform} · {fmt_time(p.media.get('duration', 0))}")
+        meta.setTextFormat(Qt.PlainText)
+        meta.setObjectName("muted")
+        meta.setStyleSheet("padding:0 12px;")
+        n = len(p.load_clips())
+        stats = QLabel(f"{n} Clip{'s' if n != 1 else ''} · {p.cost_text().split(' (')[0]}")
+        stats.setObjectName("muted")
+        stats.setStyleSheet("padding:0 12px; font-size:8.5pt;")
+        for w in (t, meta, stats):
+            lay.addWidget(w)
 
 
 class ImportPage(QWidget):
@@ -143,9 +181,10 @@ class ImportPage(QWidget):
         cl.addWidget(self.detail)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
-        self.log.setMaximumHeight(110)
+        self.log.setMaximumHeight(90)
         cl.addWidget(self.log)
         root.addWidget(self.card)
+        self.card.hide()  # erscheint erst, wenn eine Analyse läuft – mehr Platz für „Zuletzt bearbeitet“
 
         # Zuletzt
         rh = QHBoxLayout()
@@ -157,9 +196,18 @@ class ImportPage(QWidget):
         rh.addStretch(1)
         rh.addWidget(self.total_cost)
         root.addLayout(rh)
+        # Zuletzt bearbeitet: Karten mit Vorschaubild, Klick öffnet das VOD
         self.recent = QListWidget()
-        self.recent.itemDoubleClicked.connect(lambda it: self.project_ready.emit(it.data(Qt.UserRole)))
+        self.recent.setObjectName("cards")
+        self.recent.setViewMode(QListWidget.IconMode)
+        self.recent.setResizeMode(QListWidget.Adjust)
+        self.recent.setMovement(QListWidget.Static)
+        self.recent.setSpacing(8)
+        self.recent.setUniformItemSizes(True)
+        self.recent.setSelectionMode(QListWidget.NoSelection)
+        self.recent.itemClicked.connect(lambda it: self.project_ready.emit(it.data(Qt.UserRole)))
         root.addWidget(self.recent, 1)
+        self._cover_task = None
         self.refresh_recent()
 
     # ------------------------------------------------------------------ Eingaben
@@ -183,17 +231,48 @@ class ImportPage(QWidget):
         self.recent.clear()
         total, n = Project.total_cost_all()
         self.total_cost.setText(f"API-Kosten gesamt: {total:.2f} $ für {n} VOD(s)".replace(".", ","))
-        for p in Project.all()[:30]:
-            src = p.source
-            if not src:
-                continue
-            n = len(p.load_clips())
-            dur = fmt_time(p.media.get("duration", 0))
-            when = p.state.get("created", "")[:16].replace("T", " ")
-            it = QListWidgetItem(f"{src.streamer or 'Datei'} · {src.title[:70]}\n"
-                                 f"{src.platform} · {dur} · {n} Clips · API-Kosten {p.cost_text()} · {when}")
-            it.setData(Qt.UserRole, p.id)
+        missing = []
+        projects = [p for p in Project.all()[:24] if p.source]
+        if not projects:
+            it = QListWidgetItem("Noch keine VODs. Füge oben einen Link ein oder ziehe eine Datei hinein.")
+            it.setFlags(Qt.NoItemFlags)
             self.recent.addItem(it)
+            return
+        for p in projects:
+            cover = p.dir / "cover.jpg"
+            if not cover.exists():
+                missing.append(p)
+            it = QListWidgetItem()
+            it.setData(Qt.UserRole, p.id)
+            it.setSizeHint(QSize(268, 236))
+            it.setToolTip(p.source.title)
+            self.recent.addItem(it)
+            self.recent.setItemWidget(it, ProjectCard(p, cover))
+        if missing and self._cover_task is None:
+            self._make_covers(missing)
+
+    def _make_covers(self, projects):
+        """Vorschaubilder für die Karten im Hintergrund erzeugen (ein Bild aus dem ersten Drittel)."""
+        def job(progress, cancel, confirm):
+            import cv2
+
+            from clipforge.pipeline.facecam import read_frames
+
+            for p in projects:
+                if cancel.is_set():
+                    break
+                try:
+                    fr = read_frames(p.source.path, [p.media.get("duration", 60) * 0.3], max_w=480)
+                    if fr:
+                        cv2.imwrite(str(p.dir / "cover.jpg"), fr[0][1])
+                except Exception:  # fehlende Datei o. Ä.: Karte ohne Bild
+                    pass
+            return True
+
+        self._cover_task = Task(job)
+        self._cover_task.finished.connect(lambda _: (setattr(self, "_cover_task", None), self.refresh_recent()))
+        self._cover_task.failed.connect(lambda *_: setattr(self, "_cover_task", None))
+        self._cover_task.start()
 
     # ------------------------------------------------------------------ Analyse
     def start(self):
@@ -220,6 +299,7 @@ class ImportPage(QWidget):
         self.log.clear()
         self.bar.setValue(0)
         self.status.setText("Analyse läuft …")
+        self.card.show()
         self.go.setEnabled(False)
         self.cancel_btn.show()
         self.task = Task(job)

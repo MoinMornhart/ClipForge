@@ -10,7 +10,7 @@ from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QTabWidget, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar,
                                QPushButton, QSplitter, QVBoxLayout, QWidget)
 
@@ -86,7 +86,7 @@ class FacecamDialog(QDialog):
     def __init__(self, pipe: Pipeline, proj: Project, at: float, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Facecam festlegen")
-        self.resize(1000, 680)
+        self.resize(1280, 760)
         self.pipe, self.proj = pipe, proj
         lay = QVBoxLayout(self)
         info = QLabel("1. Ziehe ein Rechteck um die Facecam (orange).  2. Optional: Markiere das Objekt in der Cam "
@@ -114,7 +114,29 @@ class FacecamDialog(QDialog):
         modes.addStretch(1)
         lay.addLayout(modes)
         self.sel = RectSelector()
-        lay.addWidget(self.sel, 1)
+        body = QHBoxLayout()
+        body.addWidget(self.sel, 1)
+        # Live-Vorschau: so sieht der Clip mit den gezogenen Rahmen aus
+        side = QVBoxLayout()
+        pv_title = QLabel("Vorschau 9:16")
+        pv_title.setObjectName("h2")
+        self.pv_layout = QComboBox()
+        for k, v in LAYOUTS.items():
+            self.pv_layout.addItem(v, k)
+        self.preview = QLabel("Rahmen ziehen …")
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setFixedSize(234, 416)
+        self.preview.setStyleSheet("background:#000; border-radius:10px; color:#8d96a5;")
+        side.addWidget(pv_title)
+        side.addWidget(self.pv_layout)
+        side.addWidget(self.preview)
+        side.addStretch(1)
+        body.addLayout(side)
+        lay.addLayout(body, 1)
+        self._pv_timer = QTimer(self, singleShot=True, interval=350, timeout=self._update_preview)
+        self._pv_task = None
+        self.sel.selected.connect(lambda *_: self._pv_timer.start())
+        self.pv_layout.currentIndexChanged.connect(lambda *_: self._pv_timer.start())
         self.at = at
         frames = read_frames(proj.source.path, [at])
         cur = Facecam.from_dict(proj.state.get("facecam"))
@@ -126,6 +148,7 @@ class FacecamDialog(QDialog):
         if cur and cur.handcam:
             self.sel.hand_norm = cur.handcam
         self._set_mode("cam")
+        QTimer.singleShot(200, self._update_preview)
         self.state = QLabel(self._describe(cur))
         self.state.setObjectName("muted")
         lay.addWidget(self.state)
@@ -181,6 +204,35 @@ class FacecamDialog(QDialog):
         self._none_chosen = True
         self.sel.update()
 
+    def _current_facecam(self) -> Facecam:
+        cam, hand = self.sel.rect_norm, self.sel.hand_norm
+        base = self.cur
+        return Facecam("overlay" if cam else "none", cam=cam, face=base.face if base else None,
+                       content=base.content if base else None, handcam=hand)
+
+    def _update_preview(self):
+        if self._pv_task is not None:  # läuft noch: gleich danach erneut
+            self._pv_timer.start()
+            return
+        import tempfile
+
+        out = Path(tempfile.gettempdir()) / f"clipforge_fc_preview_{self.proj.id}.png"
+        fcm, layout, proj, at = self._current_facecam(), self.pv_layout.currentData(), self.proj, self.at
+
+        def job(progress, cancel, confirm):
+            return render.preview_frame(proj.source.path, at, layout, fcm, proj.media, out)
+
+        self._pv_task = Task(job)
+        self._pv_task.finished.connect(self._preview_ready)
+        self._pv_task.failed.connect(lambda m, h: (self.preview.setText(m), setattr(self, "_pv_task", None)))
+        self._pv_task.start()
+
+    def _preview_ready(self, path):
+        self._pv_task = None
+        pm = QPixmap(str(path))
+        if not pm.isNull():
+            self.preview.setPixmap(pm.scaled(self.preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
     def _set_mode(self, mode: str):
         self.sel.mode = mode
         self.mode_cam.setChecked(mode == "cam")
@@ -190,6 +242,7 @@ class FacecamDialog(QDialog):
     def _clear_hand(self):
         self.sel.hand_norm = None
         self.sel.update()
+        self._pv_timer.start()
 
     def _clear_subject(self):
         self.sel.subject_norm = None
@@ -210,6 +263,7 @@ class FacecamDialog(QDialog):
 
 class ClipsPage(QWidget):
     status_message = Signal(str)
+    go_start = Signal()
 
     def __init__(self, settings: Settings, parent=None):
         super().__init__(parent)
@@ -302,6 +356,7 @@ class ClipsPage(QWidget):
         self.preview_btn = QPushButton("9:16-Vorschau")
         self.preview_btn.clicked.connect(self._preview)
         ctl.addWidget(self.play_btn)
+        self.nudge_btns = nudge
         for b in nudge:
             ctl.addWidget(b)
         ctl.addStretch(1)
@@ -310,16 +365,37 @@ class ClipsPage(QWidget):
         ctl.addWidget(self.preview_btn)
         rl.addLayout(ctl)
 
-        form_card = QFrame()
-        form_card.setObjectName("card")
-        fl = QHBoxLayout(form_card)
-        left_form = QFormLayout()
+        # Status-Leiste: Freigeben/Verwerfen immer sichtbar
+        act = QHBoxLayout()
+        self.state_lbl = QLabel("")
+        self.state_lbl.setTextFormat(Qt.PlainText)
+        self.state_lbl.setObjectName("h2")
+        self.approve_btn = QPushButton("✓ Freigeben")
+        self.approve_btn.setObjectName("good")
+        self.approve_btn.setToolTip("Strg+Enter")
+        self.approve_btn.clicked.connect(lambda: self._set_status(STATUS_APPROVED))
+        self.reject_btn = QPushButton("✕ Verwerfen")
+        self.reject_btn.setObjectName("bad")
+        self.reject_btn.setToolTip("Strg+Entf")
+        self.reject_btn.clicked.connect(lambda: self._set_status(STATUS_REJECTED))
+        act.addWidget(self.state_lbl, 1)
+        act.addWidget(self.approve_btn)
+        act.addWidget(self.reject_btn)
+        rl.addLayout(act)
+
+        # Bearbeiten in Reitern statt alles auf einmal
+        self.edit_tabs = QTabWidget()
+        details = QWidget()
+        left_form = QFormLayout(details)
+        left_form.setContentsMargins(14, 12, 14, 12)
         self.title_edit = QLineEdit()
+        self.title_edit.setPlaceholderText("Titel für TikTok, Shorts, Reels")
         self.title_edit.textEdited.connect(self._edited)
         self.desc_edit = QPlainTextEdit()
         self.desc_edit.setMaximumHeight(64)
         self.desc_edit.textChanged.connect(self._edited)
         self.tags_edit = QLineEdit()
+        self.tags_edit.setPlaceholderText("#gaming #fail …")
         self.tags_edit.textEdited.connect(self._edited)
         self.reason = QLabel("")
         self.reason.setTextFormat(Qt.PlainText)
@@ -329,32 +405,54 @@ class ClipsPage(QWidget):
         left_form.addRow("Beschreibung", self.desc_edit)
         left_form.addRow("Hashtags", self.tags_edit)
         left_form.addRow("Grund", self.reason)
-        fl.addLayout(left_form, 3)
-        tr = QVBoxLayout()
-        tr.addWidget(QLabel("Untertitel-Text (Fehler hier korrigieren)"))
+        self.edit_tabs.addTab(details, "Titel && Hashtags")
+        subs = QWidget()
+        tr = QVBoxLayout(subs)
+        tr.setContentsMargins(14, 12, 14, 12)
+        hint = QLabel("Das Transkript dieses Clips. Fehler hier korrigieren – gleiche Wortzahl behält die exakten Zeiten.")
+        hint.setObjectName("muted")
+        hint.setWordWrap(True)
+        tr.addWidget(hint)
         self.transcript = QPlainTextEdit()
-        self.transcript.setMaximumHeight(110)
+        self.transcript.setMaximumHeight(120)
         tr.addWidget(self.transcript)
         apply_tr = QPushButton("Text übernehmen")
         apply_tr.clicked.connect(self._apply_transcript)
         tr.addWidget(apply_tr, 0, Qt.AlignRight)
-        fl.addLayout(tr, 2)
-        rl.addWidget(form_card)
+        self.edit_tabs.addTab(subs, "Untertitel")
+        rl.addWidget(self.edit_tabs)
 
-        act = QHBoxLayout()
-        self.approve_btn = QPushButton("✓ Freigeben")
-        self.approve_btn.setObjectName("good")
-        self.approve_btn.clicked.connect(lambda: self._set_status(STATUS_APPROVED))
-        self.reject_btn = QPushButton("✕ Verwerfen")
-        self.reject_btn.setObjectName("bad")
-        self.reject_btn.clicked.connect(lambda: self._set_status(STATUS_REJECTED))
-        act.addWidget(self.approve_btn)
-        act.addWidget(self.reject_btn)
-        act.addStretch(1)
-        rl.addLayout(act)
+        from PySide6.QtGui import QKeySequence, QShortcut
+
+        QShortcut(QKeySequence("Ctrl+Return"), self, activated=lambda: self._set_status(STATUS_APPROVED))
+        QShortcut(QKeySequence("Ctrl+Delete"), self, activated=lambda: self._set_status(STATUS_REJECTED))
+        QShortcut(QKeySequence("Ctrl+Space"), self, activated=self._toggle_play)
         split.addWidget(right)
         split.setStretchFactor(1, 1)
-        root.addWidget(split, 1)
+        from PySide6.QtWidgets import QStackedWidget as _Stack
+
+        self.body = _Stack()
+        empty = QWidget()
+        el = QVBoxLayout(empty)
+        el.setAlignment(Qt.AlignCenter)
+        icon = QLabel("🎬")
+        icon.setAlignment(Qt.AlignCenter)
+        icon.setStyleSheet("font-size:42pt;")
+        et = QLabel("Noch kein VOD geöffnet")
+        et.setObjectName("h1")
+        et.setAlignment(Qt.AlignCenter)
+        es = QLabel("Analysiere unter „Start“ ein VOD oder öffne eines aus „Zuletzt bearbeitet“.")
+        es.setObjectName("muted")
+        es.setAlignment(Qt.AlignCenter)
+        go = QPushButton("Zur Startseite")
+        go.setObjectName("primary")
+        go.clicked.connect(self.go_start.emit)
+        for w in (icon, et, es):
+            el.addWidget(w)
+        el.addWidget(go, 0, Qt.AlignCenter)
+        self.body.addWidget(empty)
+        self.body.addWidget(split)
+        root.addWidget(self.body, 1)
 
         bottom = QFrame()
         bottom.setObjectName("card")
@@ -405,6 +503,7 @@ class ClipsPage(QWidget):
         self.sub.setText(f"{src.streamer or 'Datei'} · {src.platform} · {fmt_time(self.proj.media.get('duration', 0))}"
                          f" · {len(self.clips)} Clips · {cam_txt} · API-Kosten: {self.proj.cost_text()}")
         self.player.setSource(QUrl.fromLocalFile(str(src.path)))
+        self.body.setCurrentIndex(1)
         self._fill_list()
         self._make_thumbs()
 
@@ -461,11 +560,18 @@ class ClipsPage(QWidget):
             self.list.setCurrentRow(row_sel)
             self._select(row_sel)
         else:
+            it = QListWidgetItem("Keine Clips in dieser Ansicht.\n\nTipp: In den Einstellungen unter „Trigger“\n"
+                                 "eigene Begriffe ergänzen oder die Chat-\nEmpfindlichkeit senken, dann neu analysieren.")
+            it.setFlags(Qt.NoItemFlags)
+            it.setSizeHint(QSize(360, 120))
+            self.list.addItem(it)
+            self.cur = None
+            self.state_lbl.setText("Kein Clip ausgewählt")
             self._enable_editor(False)
 
     def _enable_editor(self, on: bool):
         for w in (self.title_edit, self.desc_edit, self.tags_edit, self.transcript, self.approve_btn, self.reject_btn,
-                  self.layout_box, self.preview_btn, self.play_btn, self.range):
+                  self.layout_box, self.preview_btn, self.play_btn, self.range, *self.nudge_btns):
             w.setEnabled(on)
 
     # ------------------------------------------------------------------ Auswahl + Bearbeiten
@@ -479,6 +585,9 @@ class ClipsPage(QWidget):
         self._loading = True
         self.cur = c
         self._enable_editor(True)
+        label = STATUS_STYLE.get(c.status, STATUS_STYLE[STATUS_NEW])[0]
+        score = "–" if c.score is None else f"{c.score:.0f}/10"
+        self.state_lbl.setText(f"Clip {row + 1} von {self.list.count()} · Score {score} · {label}")
         self.title_edit.setText(c.title)
         self.desc_edit.setPlainText(c.description)
         self.tags_edit.setText(" ".join(c.hashtags))

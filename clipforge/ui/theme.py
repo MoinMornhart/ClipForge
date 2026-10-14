@@ -33,6 +33,10 @@ QListWidget#nav {{ background: {PANEL}; border: none; border-right: 1px solid {L
 QListWidget#nav::item {{ padding: 10px 14px; border-radius: 8px; margin: 2px 4px; color: {MUTED}; }}
 QListWidget#nav::item:selected {{ background: {PANEL_2}; color: {FG}; border-left: 3px solid {ACCENT}; }}
 QListWidget#nav::item:hover {{ background: {PANEL_2}; }}
+QListWidget#cards {{ background: transparent; border: none; }}
+QListWidget#cards::item {{ border: none; background: transparent; }}
+QListWidget#cards::item:selected {{ background: transparent; }}
+QFrame#card:hover {{ border-color: {ACCENT}; }}
 QListWidget {{ background: {PANEL}; border: 1px solid {LINE}; border-radius: 10px; outline: none; }}
 QListWidget::item {{ border-bottom: 1px solid {LINE}; }}
 QListWidget::item:selected {{ background: #262d3b; }}

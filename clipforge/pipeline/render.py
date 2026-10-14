@@ -167,6 +167,24 @@ def plan(job: RenderJob, media: dict, work: Path) -> tuple[str, str]:
     return layout, graph.replace("[v]", "[vl]")
 
 
+def preview_frame(src: Path, at: float, layout: str, cam: fc.Facecam | None, media: dict, out_png: Path,
+                  ffmpeg_path: str = "") -> Path:
+    """Ein einzelnes 9:16-Bild mit dem gewählten Layout – für die Live-Vorschau im Facecam-Dialog.
+    Ohne Nachführung und ohne Bildanalyse, damit es in unter einer Sekunde fertig ist."""
+    work = Path(tempfile.mkdtemp(prefix="cf_preview_"))
+    try:
+        job = RenderJob(src, Clip(at, at + 1.0, at, []), out_png, layout, facecam=cam, smart_crop=False,
+                        track_face=False)
+        _, graph = plan(job, media, work)
+        graph = graph.replace("[vl]", "[v]")
+        ffmpeg.run(["-ss", f"{at:.3f}", "-i", str(src), "-filter_complex", graph, "-map", "[v]", "-frames:v", "1",
+                    "-update", "1", str(out_png.resolve())], configured=ffmpeg_path, cwd=work,
+                   error_message="Die Vorschau konnte nicht erstellt werden.")
+        return out_png
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 _WM_POS = {
     "oben-rechts": "W-w-40:60", "oben-links": "40:60", "unten-rechts": "W-w-40:H-h-220",
     "unten-links": "40:H-h-220", "mitte": "(W-w)/2:(H-h)/2",

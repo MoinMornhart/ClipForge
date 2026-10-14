@@ -22,7 +22,7 @@ class DropZone(QFrame):
         super().__init__(parent)
         self.setObjectName("drop")
         self.setAcceptDrops(True)
-        self.setMinimumHeight(150)
+        self.setMinimumHeight(120)
         lay = QVBoxLayout(self)
         lay.setAlignment(Qt.AlignCenter)
         icon = QLabel("⬇")
