@@ -64,6 +64,7 @@ class ClipRow(QWidget):
         reason.setObjectName("muted")
         reason.setStyleSheet("font-size:8.5pt;")
         for w in (title, meta, reason):
+            w.setTextFormat(Qt.PlainText)  # KI-/Streamtitel nie als HTML deuten
             mid.addWidget(w)
         lay.addLayout(mid, 1)
         right = QVBoxLayout()
@@ -225,12 +226,14 @@ class ClipsPage(QWidget):
         root.setContentsMargins(20, 18, 20, 14)
         head = QHBoxLayout()
         self.title = QLabel("Clips")
+        self.title.setTextFormat(Qt.PlainText)
         self.title.setObjectName("h1")
         self.title.setMinimumWidth(10)
         from PySide6.QtWidgets import QSizePolicy
 
         self.title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.sub = QLabel("Öffne links unter „Start“ ein VOD.")
+        self.sub.setTextFormat(Qt.PlainText)
         self.sub.setObjectName("muted")
         tv = QVBoxLayout()
         tv.addWidget(self.title)
@@ -319,6 +322,7 @@ class ClipsPage(QWidget):
         self.tags_edit = QLineEdit()
         self.tags_edit.textEdited.connect(self._edited)
         self.reason = QLabel("")
+        self.reason.setTextFormat(Qt.PlainText)
         self.reason.setWordWrap(True)
         self.reason.setObjectName("muted")
         left_form.addRow("Titel", self.title_edit)

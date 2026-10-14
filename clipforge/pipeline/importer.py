@@ -63,16 +63,54 @@ def from_local(path: str | Path) -> Source:
     return Source(path=p, title=p.stem, streamer="", date=date)
 
 
+MAX_FETCH = 64 * 1024 * 1024  # ein HLS-Segment/eine Playlist ist nie größer
+
+
+def check_public_url(url: str) -> None:
+    """Nur http/https zu öffentlichen Adressen – eine präparierte Playlist darf weder lokale Dateien (file://)
+    noch Geräte im Heimnetz (192.168.x.x, localhost) ansprechen."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    u = urlparse(url)
+    if u.scheme not in ("http", "https") or not u.hostname:
+        raise ClipForgeError("Der Stream enthält eine ungültige Adresse.", "Nur http/https ist erlaubt.", url[:200])
+    try:
+        infos = socket.getaddrinfo(u.hostname, None)
+    except OSError as e:
+        raise ClipForgeError("Der Videoserver ist nicht erreichbar.", "Prüfe die Internetverbindung.", str(e)) from e
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            raise ClipForgeError("Der Stream verweist auf eine Adresse im lokalen Netz.",
+                                 "Aus Sicherheitsgründen wird das nicht geladen.", f"{u.hostname} → {ip}")
+
+
+_checked_hosts: set[str] = set()
+
+
 def _fetch(url: str, headers: dict, timeout: int = 30, retries: int = 5) -> bytes:
     import time
     import urllib.request
+    from urllib.parse import urlparse
 
+    host = urlparse(url).hostname or ""
+    if host not in _checked_hosts:
+        check_public_url(url)
+        _checked_hosts.add(host)
     last = None
     for i in range(retries):
         try:
             req = urllib.request.Request(url, headers=headers or {})
-            with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 – nur http(s)-Links von yt-dlp
-                return r.read()
+            with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 – Schema/Host geprüft
+                if urlparse(r.geturl()).hostname not in _checked_hosts:  # Weiterleitung auf anderen Host
+                    check_public_url(r.geturl())
+                    _checked_hosts.add(urlparse(r.geturl()).hostname or "")
+                data = r.read(MAX_FETCH + 1)
+                if len(data) > MAX_FETCH:
+                    raise ClipForgeError("Ein Videostück ist unerwartet groß.", "Der Download wurde abgebrochen.")
+                return data
         except OSError as e:
             last = e
             time.sleep(1 + i)

@@ -19,12 +19,28 @@ log = get_logger("ffmpeg")
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+def which_safe(name: str) -> str | None:
+    """Wie shutil.which, aber ohne den aktuellen Ordner: unter Windows sucht shutil.which dort zuerst,
+    eine untergeschobene ffmpeg.exe/git.exe im Downloads-Ordner würde sonst gestartet."""
+    cwd = os.path.normcase(os.path.abspath(os.getcwd()))
+    exts = [""] + os.environ.get("PATHEXT", ".EXE;.CMD;.BAT").lower().split(";")
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        d = d.strip('"')
+        if not d or os.path.normcase(os.path.abspath(d)) == cwd:
+            continue
+        for ext in exts:
+            p = os.path.join(d, name + ext)
+            if os.path.isfile(p):
+                return p
+    return None
+
+
 def _candidates(name: str, configured: str = "") -> list[str]:
     out = []
     if configured:
         p = Path(configured)
         out.append(str(p / f"{name}.exe") if p.is_dir() else str(p.with_name(f"{name}.exe")))
-    found = shutil.which(name)
+    found = which_safe(name)
     if found:
         out.append(found)
     local = os.environ.get("LOCALAPPDATA", "")

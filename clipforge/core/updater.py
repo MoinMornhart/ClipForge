@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -48,7 +49,9 @@ def is_git() -> bool:
 
 
 def _git(*args: str, timeout: int = 60) -> subprocess.CompletedProcess:
-    git = shutil.which("git")
+    from clipforge.core.ffmpeg import which_safe
+
+    git = which_safe("git")
     if not git:
         raise ClipForgeError("Git ist nicht installiert.", "Installiere Git mit „winget install Git.Git“.")
     return subprocess.run([git, *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
@@ -111,54 +114,85 @@ def _apply_git() -> str:
 # --------------------------------------------------------------------------- ZIP (installierte Version)
 
 
+def parse_version(v: str) -> tuple[int, ...]:
+    """„v0.2.0“ / „0.2.0“ → (0, 2, 0). Unbekanntes → (0,)."""
+    nums = re.findall(r"\d+", v or "")
+    return tuple(int(n) for n in nums[:4]) or (0,)
+
+
+def installed_version() -> str:
+    m = re.search(r'__version__\s*=\s*"([^"]+)"', (ROOT / "clipforge" / "__init__.py").read_text(encoding="utf-8"))
+    return m.group(1) if m else "0"
+
+
+def _latest_release() -> dict:
+    """Neuestes veröffentlichtes Release. Installierte Versionen aktualisieren sich NUR auf Releases –
+    ein beliebiger Zwischenstand auf main (oder ein versehentlicher Push) wird nie verteilt."""
+    rel = _api("releases/latest")
+    tag = rel.get("tag_name") or ""
+    if not tag or rel.get("draft") or rel.get("prerelease"):
+        raise OSError("kein gültiges Release")
+    return {"tag": tag, "version": tag.lstrip("vV"), "notes": rel.get("body") or "", "name": rel.get("name") or tag}
+
+
 def _check_zip() -> UpdateInfo:
-    cur = installed_build()
+    cur = installed_version()
     try:
-        latest = _api(f"commits/{BRANCH}")["sha"]
+        rel = _latest_release()
     except OSError as e:
         log.warning("GitHub-Abfrage fehlgeschlagen: %s", e)
         return UpdateInfo(False, message="GitHub ist nicht erreichbar. Internetverbindung prüfen.")
-    if cur and latest.startswith(cur):
-        return UpdateInfo(False, 0, cur[:7], latest[:7], [], "ClipForge ist aktuell.")
-    changes, n = [], 1
-    if cur:
-        try:
-            cmp = _api(f"compare/{cur}...{latest}")
-            n = int(cmp.get("ahead_by", 1))
-            changes = [c["commit"]["message"].splitlines()[0] for c in cmp.get("commits", [])][-10:]
-        except OSError:
-            pass
-    return UpdateInfo(n > 0, n, cur[:7] or "unbekannt", latest[:7], changes,
-                      f"{n} neue Änderung(en) verfügbar." if n else "ClipForge ist aktuell.")
+    if parse_version(rel["version"]) <= parse_version(cur):  # nur aufwärts, nie ein Downgrade
+        return UpdateInfo(False, 0, cur, rel["version"], [], f"ClipForge {cur} ist aktuell.")
+    changes = [l.strip("-* ").strip() for l in rel["notes"].splitlines() if l.strip().startswith(("-", "*"))][:10]
+    return UpdateInfo(True, 1, cur, rel["version"], changes, f"Neue Version {rel['version']} verfügbar.")
 
 
 def _apply_zip() -> str:
+    cur = installed_version()
     try:
-        sha = _api(f"commits/{BRANCH}")["sha"]
+        rel = _latest_release()
+        if parse_version(rel["version"]) <= parse_version(cur):
+            return f"ClipForge {cur} ist bereits aktuell."
+        sha = _api(f"commits/{rel['tag']}")["sha"]
         req = urllib.request.Request(f"https://codeload.github.com/{REPO}/zip/{sha}", headers=_UA)
         with urllib.request.urlopen(req, timeout=120) as r:  # noqa: S310 – feste https-Adresse
-            data = r.read()
+            data = r.read(200 * 1024 * 1024)  # Obergrenze: das Programmpaket ist wenige MB groß
     except OSError as e:
         raise ClipForgeError("Das Update konnte nicht geladen werden.", "Internetverbindung prüfen.", str(e)) from e
     with tempfile.TemporaryDirectory(prefix="cf_update_") as tmp:
-        zipfile.ZipFile(io.BytesIO(data)).extractall(tmp)
+        zipfile.ZipFile(io.BytesIO(data)).extractall(tmp)  # zipfile entschärft ../ und absolute Pfade
         src = next(Path(tmp).iterdir())  # ClipForge-<sha>/
-        if not (src / "clipforge" / "__init__.py").exists():
+        init = src / "clipforge" / "__init__.py"
+        if not init.exists():
             raise ClipForgeError("Das Update-Paket ist unvollständig.", "Später erneut versuchen.")
-        # Programmcode austauschen (Python lädt die neuen Dateien beim nächsten Start)
-        shutil.rmtree(ROOT / "clipforge.old", ignore_errors=True)
-        if (ROOT / "clipforge").exists():
-            (ROOT / "clipforge").rename(ROOT / "clipforge.old")
-        shutil.copytree(src / "clipforge", ROOT / "clipforge")
+        if f'"{rel["version"]}"' not in init.read_text(encoding="utf-8"):
+            raise ClipForgeError("Das Update-Paket passt nicht zur angekündigten Version.", "Später erneut versuchen.")
+        _swap_code(src / "clipforge")
         for name in ("requirements.txt", "README.md", "LICENSE"):
             if (src / name).exists():
                 shutil.copy2(src / name, ROOT / name)
         if (src / "installer" / "setup_runtime.bat").exists():
             shutil.copy2(src / "installer" / "setup_runtime.bat", ROOT / "setup_runtime.bat")
     (ROOT / "BUILD").write_text(sha[:12], encoding="utf-8")
-    shutil.rmtree(ROOT / "clipforge.old", ignore_errors=True)
     msg = _pip_update()
-    return msg or f"Update installiert (Version {sha[:7]}). Bitte ClipForge neu starten."
+    return msg or f"Update auf Version {rel['version']} installiert. Bitte ClipForge neu starten."
+
+
+def _swap_code(new_src: Path) -> None:
+    """Programmcode austauschen, ohne dass bei einem Fehler (volle Platte, Virenscanner) gar kein Code übrig
+    bleibt: erst vollständig nach clipforge.new kopieren, dann per Umbenennen tauschen, bei Fehler zurück."""
+    new, cur, old = ROOT / "clipforge.new", ROOT / "clipforge", ROOT / "clipforge.old"
+    shutil.rmtree(new, ignore_errors=True)
+    shutil.copytree(new_src, new)
+    shutil.rmtree(old, ignore_errors=True)
+    cur.rename(old)
+    try:
+        new.rename(cur)
+    except OSError:
+        old.rename(cur)  # alte Version wiederherstellen
+        raise
+    shutil.rmtree(old, ignore_errors=True)
 
 
 def _pip_update() -> str:

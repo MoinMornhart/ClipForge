@@ -218,6 +218,11 @@ class SettingsPage(QWidget):
         self.key.clear()
         self._key_state()
         self.base_url.setPlaceholderText(p.base_url or "http://server:port/v1")
+        # eigene Adresse nur für lokale/eigene Server – Cloud-Keys gehen immer an die offizielle Adresse
+        own = p.id in ("custom", "ollama", "lmstudio")
+        self.base_url.setEnabled(own)
+        if not own:
+            self.base_url.setPlaceholderText(f"fest: {p.base_url}")
         self.model.clear()
         self.model.addItems(list(p.models))
         if init and self.s.llm_model:
@@ -518,6 +523,7 @@ class SettingsPage(QWidget):
         t.setObjectName("h2")
         v.addWidget(t)
         self.upd_state = QLabel("Noch nicht geprüft.")
+        self.upd_state.setTextFormat(Qt.PlainText)  # Release-Notizen kommen von außen
         self.upd_state.setObjectName("muted")
         self.upd_state.setWordWrap(True)
         v.addWidget(self.upd_state)

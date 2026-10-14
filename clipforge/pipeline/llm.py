@@ -212,6 +212,21 @@ def _key(p: Provider) -> str:
     return key
 
 
+# Nur bei diesen Anbietern darf eine eigene Server-Adresse gelten. Bei Cloud-Anbietern immer die offizielle
+# Adresse – sonst ginge z. B. der OpenAI-Key an eine früher für Ollama eingetragene Adresse.
+CUSTOM_URL_PROVIDERS = {"custom", "ollama", "lmstudio"}
+
+
+def server_url(p: Provider, configured: str) -> str:
+    if p.id in CUSTOM_URL_PROVIDERS and configured.strip():
+        url = configured.strip()
+        if not url.lower().startswith(("http://", "https://")):
+            raise ClipForgeError("Die Server-Adresse muss mit http:// oder https:// beginnen.",
+                                 "Beispiel: http://localhost:11434/v1")
+        return url
+    return p.base_url
+
+
 def _parse_json(text: str) -> dict:
     try:
         return json.loads(text)
@@ -281,7 +296,7 @@ class Scorer:
     def _ask_openai_compat(self, prompt: str) -> dict:
         import openai
 
-        base = self.s.llm_base_url or self.p.base_url
+        base = server_url(self.p, self.s.llm_base_url)
         if not base:
             raise ClipForgeError("Für den eigenen Server fehlt die Adresse.", "Trage die Basis-URL in den Einstellungen ein.")
         if self._client is None:
@@ -425,7 +440,7 @@ def list_models(s: Settings, provider_id: str | None = None) -> list[str]:
             return [m.id for m in anthropic.Anthropic(api_key=key).models.list()] if key else list(p.models)
         import openai
 
-        base = (s.llm_base_url if p.id == s.llm_provider else "") or p.base_url
+        base = server_url(p, s.llm_base_url if p.id == s.llm_provider else "")
         if not base or (p.needs_key and not key):
             return list(p.models)
         return sorted(m.id for m in openai.OpenAI(api_key=key or "lokal", base_url=base).models.list())
