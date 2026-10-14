@@ -30,6 +30,25 @@ def normalize(text: str) -> str:
     return " ".join(t.split())
 
 
+# Füllwörter zählen nicht als Kern eines Begriffs: „das ist ein clip“ muss ein Wort wie „clip“ enthalten
+_STOP = {normalize(w) for w in (
+    "das des dis der die den dem ein eine einen einer ist es is it that this the a an muss mus werden wird "
+    "und and jetzt mal bitte doch so ja oh"
+).split()}
+ANCHOR_MIN = 75  # Mindestähnlichkeit je Kernwort
+
+
+def anchors(phrase_norm: str) -> list[str]:
+    toks = phrase_norm.split()
+    core = [t for t in toks if t not in _STOP]
+    return core or toks
+
+
+def has_anchors(cand: str, core: list[str]) -> bool:
+    toks = cand.split()
+    return all(any(fuzz.ratio(a, t) >= ANCHOR_MIN for t in toks) for a in core)
+
+
 @dataclass
 class Hit:
     kind: str  # "Sprachbefehl" | "Schlüsselbegriff" | "Chat" | "Lautstärke"
@@ -55,6 +74,7 @@ def find_hits(words: list[Word], triggers: list[tuple[str, Trigger]], dedupe_sec
         if not target:
             continue
         n = len(target.split())
+        core = anchors(target)
         # Kurze Begriffe brauchen eine höhere Schwelle, sonst passt fast alles
         threshold = trig.threshold if len(target) >= 6 else max(trig.threshold, 92)
         lengths = sorted({max(1, n - 1), n, n + 1})
@@ -67,6 +87,8 @@ def find_hits(words: list[Word], triggers: list[tuple[str, Trigger]], dedupe_sec
                 if i + L > len(words):
                     continue
                 cand = " ".join(x for x in norm[i:i + L] if x)
+                if not has_anchors(cand, core):
+                    continue
                 score = fuzz.ratio(cand, target)
                 if best is None or score > best[0]:
                     best = (score, L)

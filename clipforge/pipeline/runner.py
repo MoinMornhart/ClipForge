@@ -40,15 +40,19 @@ class Pipeline:
         self._backend = None
 
     # 1. Import
-    def open(self, ref: str) -> Project:
+    def open(self, ref: str, section: tuple[float, float] | None = None) -> Project:
         ref = ref.strip().strip('"')
-        proj = Project.for_source(ref if importer.is_url(ref) else str(Path(ref).resolve()))
+        key = ref if importer.is_url(ref) else str(Path(ref).resolve())
+        if section and importer.is_url(ref):
+            key += f"#{int(section[0])}-{int(section[1])}"
+        proj = Project.for_source(key)
         src = proj.source
         if src and src.path.exists() and proj.done("import"):
             return proj
         if importer.is_url(ref):
-            self.progress("import", 0.0, "Lade VOD herunter …")
-            src = importer.download(ref, self.s.download_dir,
+            platform = importer.platform_of(ref)
+            self.progress("import", 0.0, f"Lade VOD von {platform} herunter …")
+            src = importer.download(ref, self.s.download_dir, section=section,
                                     on_progress=lambda f, m: self.progress("import", f, m), cancel=self.cancel)
         else:
             src = importer.from_local(ref)
@@ -155,9 +159,10 @@ class Pipeline:
                       + (f" · {cost:.3f} $" if cost is not None else ""))
         return clips
 
-    def analyze(self, ref: str, confirm: Callable[[CostEstimate], bool] | None = None) -> tuple[Project, list[Clip]]:
+    def analyze(self, ref: str, confirm: Callable[[CostEstimate], bool] | None = None,
+                section: tuple[float, float] | None = None) -> tuple[Project, list[Clip]]:
         """confirm wird vor kostenpflichtigen Schritten mit der Schätzung aufgerufen; False bricht ab."""
-        proj = self.open(ref)
+        proj = self.open(ref, section)
         if confirm and self.s.transcription_backend != "local" and not proj.done("transcribe"):
             if not confirm(estimate_cost(self.s, proj.media["duration"])):
                 raise Cancelled()

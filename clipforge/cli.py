@@ -35,6 +35,25 @@ def _progress_printer():
     return cb
 
 
+def _parse_time(s: str) -> float:
+    parts = [float(p) for p in s.strip().split(":")]
+    t = 0.0
+    for p in parts:
+        t = t * 60 + p
+    return t
+
+
+def _parse_section(s: str) -> tuple[float, float]:
+    try:
+        a, b = s.split("-", 1)
+        start, end = _parse_time(a), _parse_time(b)
+    except ValueError as e:
+        raise ClipForgeError(f"„{s}“ ist kein gültiger Ausschnitt.", "Beispiel: --section 1:00:00-1:20:00") from e
+    if end <= start:
+        raise ClipForgeError("Das Ende des Ausschnitts liegt vor dem Anfang.", "Beispiel: --section 1:00:00-1:20:00")
+    return start, end
+
+
 def _fmt(t: float) -> str:
     t = int(t)
     return f"{t // 3600}:{t % 3600 // 60:02d}:{t % 60:02d}"
@@ -123,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--approved", action="store_true", help="nur freigegebene Clips exportieren")
         p.add_argument("-y", "--yes", action="store_true", help="Kostenabfrage automatisch bestätigen")
         p.add_argument("--no-ai", action="store_true", help="ohne KI-Bewertung")
+        p.add_argument("--section", help="nur Ausschnitt laden, z. B. 1:00:00-1:20:00 (nur bei Links)")
     sub.add_parser("check")
     k = sub.add_parser("key", help="API-Keys verwalten")
     k.add_argument("action", choices=["set", "delete", "list"])
@@ -153,7 +173,8 @@ def main(argv: list[str] | None = None) -> int:
     cancel = threading.Event()
     pipe = Pipeline(s, _progress_printer(), cancel)
     try:
-        proj, clips = pipe.analyze(args.source, confirm=_confirm_factory(args.yes))
+        section = _parse_section(args.section) if args.section else None
+        proj, clips = pipe.analyze(args.source, confirm=_confirm_factory(args.yes), section=section)
         print(f"\n{len(clips)} Clip(s) gefunden:")
         for i, c in enumerate(clips, 1):
             score = f"[{c.score:.0f}/10] " if c.score is not None else ""

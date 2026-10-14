@@ -25,6 +25,13 @@ def test_no_false_positive():
     assert find_hits(words("wir gehen jetzt in den keller und holen das licht"), s.all_triggers()) == []
 
 
+def test_core_word_required():
+    # Echter Fehlalarm aus einem Twitch-VOD: das Kernwort „Clip“ fehlt
+    s = Settings()
+    assert find_hits(words("Mein Gefühl sagt, das ist ein Fehler, was wir jetzt machen."), s.all_triggers()) == []
+    assert len(find_hits(words("okay das ist ein klip leute"), s.all_triggers())) == 1
+
+
 def test_custom_keyword_short_needs_high_similarity():
     s = Settings(voice_triggers=[], custom_keywords=[Trigger("boom", threshold=75)])
     assert len(find_hits(words("und dann boom einfach weg"), s.all_triggers())) == 1

@@ -10,3 +10,4 @@ openai>=1.50
 numpy>=1.26
 chat-downloader>=0.2.8
 pytest>=8.0
+curl_cffi>=0.11

@@ -43,7 +43,7 @@ class Settings:
     stt_api_model: str = ""  # leer = Standardmodell des Anbieters
     whisper_model: str = "large-v3-turbo"
     whisper_device: str = "cuda"  # "cuda" | "cpu"
-    language: str = "de"  # "" = automatisch
+    language: str = ""  # "" = automatisch erkennen (sonst z. B. "de", "en"); fest = etwas genauer
     chunk_minutes: float = 10.0
 
     # Trigger
