@@ -1,26 +1,33 @@
-"""9:16-Export (1080×1920) über FFmpeg, mit NVENC wenn verfügbar."""
+"""9:16-Export (1080×1920) über FFmpeg, mit NVENC wenn verfügbar.
+
+Ein Export besteht aus: Layout (inkl. Facecam, Gameplay-Ausschnitt, Nachführung), Untertiteln,
+Wasserzeichen, Lautheit (-14 LUFS) und optional Intro/Outro.
+"""
 
 from __future__ import annotations
 
 import re
+import shutil
+import tempfile
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
 from clipforge.core import ffmpeg
+from clipforge.core.errors import ClipForgeError
 from clipforge.core.log import get_logger
 from clipforge.core.settings import Settings
+from clipforge.pipeline import facecam as fc
+from clipforge.pipeline import layouts
 from clipforge.pipeline.clips import Clip
+from clipforge.pipeline.subtitles import SubtitleStyle, build_ass, clip_words, prepare_fonts
+from clipforge.pipeline.transcribe import Word
 
 log = get_logger("render")
 
-W, H = 1080, 1920
-
-LAYOUTS = {
-    "blur": "Gameplay mittig, unscharfer Hintergrund",
-    "crop": "Mittig zugeschnitten (Vollbild)",
-}
+W, H = layouts.W, layouts.H
+LAYOUTS = layouts.LAYOUTS
 
 
 @dataclass
@@ -28,24 +35,22 @@ class RenderJob:
     src: Path
     clip: Clip
     out: Path
-    layout: str
+    layout: str = "auto"
     fps: int = 30
     codec: str = "h264"
     nvenc: bool = True
-
-
-def layout_filter(layout: str, fps: int) -> str:
-    tail = f"fps={fps},format=yuv420p[v]"
-    if layout == "crop":
-        return f"[0:v]crop='min(iw,ih*9/16)':ih,scale={W}:{H}:flags=lanczos,setsar=1,{tail}"
-    # blur (Standard): Hintergrund klein rechnen, weichzeichnen, hochskalieren – spart viel Rechenzeit
-    return (
-        f"[0:v]split=2[bg][fg];"
-        f"[bg]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=10:2,"
-        f"scale={W}:{H},setsar=1[bgb];"
-        f"[fg]scale={W}:-2:flags=lanczos,setsar=1[fgs];"
-        f"[bgb][fgs]overlay=(W-w)/2:(H-h)/2,{tail}"
-    )
+    facecam: fc.Facecam | None = None
+    words: list[Word] = field(default_factory=list)  # Wörter des ganzen VODs (für Untertitel)
+    subtitle_style: SubtitleStyle | None = None
+    loudnorm: bool = True
+    trim_silence: bool = True
+    watermark: str = ""  # Pfad zu PNG
+    watermark_pos: str = "oben-rechts"
+    watermark_opacity: float = 0.8
+    intro: str = ""
+    outro: str = ""
+    track_face: bool = True
+    smart_crop: bool = True
 
 
 def encoder_args(codec: str, nvenc: bool) -> list[str]:
@@ -61,22 +66,164 @@ def encoder_args(codec: str, nvenc: bool) -> list[str]:
     return args
 
 
-def render(job: RenderJob, on_progress: Callable[[float], None] | None = None,
-           cancel: threading.Event | None = None, ffmpeg_path: str = "") -> Path:
-    job.out.parent.mkdir(parents=True, exist_ok=True)
-    nvenc = job.nvenc and ffmpeg.nvenc_available(ffmpeg_path)
-    dur = job.clip.duration
-    args = [
-        "-ss", f"{job.clip.start:.3f}", "-t", f"{dur:.3f}", "-i", str(job.src),
-        "-filter_complex", layout_filter(job.layout, job.fps), "-map", "[v]", "-map", "0:a?",
-        *encoder_args(job.codec, nvenc),
-        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", str(job.out),
-    ]
-    ffmpeg.run(args, duration=dur, on_progress=on_progress, cancel=cancel, configured=ffmpeg_path,
-               error_message=f"Clip „{job.clip.title or job.clip.id}“ konnte nicht exportiert werden.")
-    log.info("Exportiert: %s (%s, %s)", job.out, job.layout, "NVENC" if nvenc else "CPU")
-    return job.out
+def layout_filter(layout: str, fps: int, src_w: int = 1920, src_h: int = 1080) -> str:
+    """Einfache Variante ohne Facecam (für Tests und Vorschau)."""
+    return layouts.build(layouts.resolve_layout(layout, False, False), layouts.LayoutInput(src_w, src_h, fps))
 
+
+def speech_bounds(words: list[Word], start: float, end: float, pad_in: float = 0.15,
+                  pad_out: float = 0.5) -> tuple[float, float]:
+    """Stille am Anfang und Ende abschneiden: Clip beginnt kurz vor dem ersten und endet kurz
+    nach dem letzten Wort."""
+    inside = [w for w in words if start <= w.s < end]
+    if not inside:
+        return start, end
+    return max(start, inside[0].s - pad_in), min(end, inside[-1].e + pad_out)
+
+
+def plan(job: RenderJob, media: dict, work: Path) -> tuple[str, str]:
+    """Liefert (aufgelöstes Layout, Filtergraph bis [vl])."""
+    sw, sh = media["width"], media["height"]
+    cam_info = job.facecam
+    has_cam = bool(cam_info and cam_info.mode == "overlay" and cam_info.cam)
+    fullcam = bool(cam_info and cam_info.mode == "fullcam")
+    layout = layouts.resolve_layout(job.layout, has_cam, fullcam)
+    li = layouts.LayoutInput(sw, sh, job.fps)
+    clip = job.clip
+    if has_cam:
+        li.cam = fc.Rect.from_norm(cam_info.cam, sw, sh)
+    if cam_info and cam_info.face:
+        li.face = fc.Rect.from_norm(cam_info.face, sw, sh)
+    content = cam_info.content if cam_info else None
+    if job.smart_crop and layout in ("crop", "stack", "corner", "blur"):
+        try:
+            content = fc.clip_letterbox(job.src, clip.start, clip.end) or content
+        except Exception as e:
+            log.warning("Balkenerkennung fehlgeschlagen: %s", e)
+    if content and (content[0] > 0 or content[1] < 1):
+        li.content_y = int(content[0] * sh)
+        li.content_h = int((content[1] - content[0]) * sh)
+    ch = li.content_h or sh
+
+    if layout in ("crop", "stack", "corner") and job.smart_crop:
+        out_h = H - li.stack_top if layout == "stack" else H
+        gw = layouts.gameplay_width(ch, W, out_h)
+        try:
+            li.gameplay_x = fc.smart_crop_x(job.src, clip.start, clip.end, gw, sw, sh, exclude=li.cam)
+        except Exception as e:  # Bildanalyse ist Kür: im Zweifel mittig
+            log.warning("Gameplay-Ausschnitt nicht bestimmbar, nehme Mitte: %s", e)
+
+    if layout in ("stack", "cam") and (has_cam or fullcam):
+        region = li.cam if has_cam else fc.Rect(0, 0, sw, sh)
+        aspect = W / li.stack_top if layout == "stack" else W / H
+        if layout == "cam" and has_cam:
+            aspect = None  # Facecam-Fenster wird als Ganzes gezeigt
+        if aspect:
+            ww, wh = layouts.cam_window_size(region, aspect)
+            li.cam_window = (ww, wh)
+            face = li.face or region
+            li.cam_xy = (int(min(max(region.x, face.cx - ww / 2), region.x + region.w - ww)),
+                         int(min(max(region.y, face.cy - 0.1 * face.h - wh / 2), region.y + region.h - wh)))
+            # Nachführen lohnt nur, wenn das Fenster kleiner als der Bereich ist
+            if job.track_face and (ww < region.w - 8 or wh < region.h - 8):
+                try:
+                    tr = fc.track_window(job.src, clip.start, clip.end, region, ww, wh)
+                    script = fc.sendcmd_script(tr, "cam")
+                    if script:
+                        (work / "track.txt").write_text(script, encoding="utf-8")
+                        li.tracked = True
+                        li.cam_xy = (int(tr.xs[0]), int(tr.ys[0]))
+                except Exception as e:
+                    log.warning("Nachführen nicht möglich, nutze festen Ausschnitt: %s", e)
+    graph = layouts.build(layout, li)
+    return layout, graph.replace("[v]", "[vl]")
+
+
+_WM_POS = {
+    "oben-rechts": "W-w-40:60", "oben-links": "40:60", "unten-rechts": "W-w-40:H-h-220",
+    "unten-links": "40:H-h-220", "mitte": "(W-w)/2:(H-h)/2",
+}
+
+
+def render(job: RenderJob, on_progress: Callable[[float], None] | None = None,
+           cancel: threading.Event | None = None, ffmpeg_path: str = "", media: dict | None = None) -> Path:
+    job.out.parent.mkdir(parents=True, exist_ok=True)
+    media = media or ffmpeg.probe(job.src, ffmpeg_path)
+    nvenc = job.nvenc and ffmpeg.nvenc_available(ffmpeg_path)
+    clip = job.clip
+    if clip.edited_words:  # im Editor korrigiertes Transkript hat Vorrang
+        job.words = [Word(w, s, e) for w, s, e in clip.edited_words]
+    start, end = clip.start, clip.end
+    if job.trim_silence and job.words:
+        start, end = speech_bounds(job.words, start, end)
+    trimmed = Clip(**{**clip.to_dict(), "start": start, "end": end})
+    dur = end - start
+    work = Path(tempfile.mkdtemp(prefix="cf_render_"))
+    try:
+        layout, graph = plan(RenderJob(**{**job.__dict__, "clip": trimmed}), media, work)
+        chain = [graph]
+        last = "vl"
+        style = job.subtitle_style
+        if style and style.enabled and job.words:
+            words = clip_words(job.words, start, end)
+            if words:
+                (work / "subs.ass").write_text(build_ass(words, style, dur), encoding="utf-8")
+                prepare_fonts(style, work)
+                chain.append(f"[{last}]subtitles=subs.ass:fontsdir=fonts[vs]")
+                last = "vs"
+        inputs = ["-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(job.src)]
+        if job.watermark and Path(job.watermark).exists():
+            inputs += ["-loop", "1", "-i", str(job.watermark)]
+            pos = _WM_POS.get(job.watermark_pos, _WM_POS["oben-rechts"])
+            chain.append(f"[1:v]format=rgba,scale={int(W * 0.28)}:-1,colorchannelmixer=aa={job.watermark_opacity:.2f}[wm];"
+                         f"[{last}][wm]overlay={pos}:shortest=1[vw]")
+            last = "vw"
+        chain.append(f"[{last}]null[v]")
+        afilter = ["-af", "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000"] if job.loudnorm else []
+        main_out = job.out if not (job.intro or job.outro) else work / "main.mp4"
+        args = [*inputs, "-filter_complex", ";".join(chain), "-map", "[v]", "-map", "0:a?", *afilter,
+                *encoder_args(job.codec, nvenc), "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+                "-movflags", "+faststart", str(main_out.resolve())]
+        share = 0.85 if main_out != job.out else 1.0
+        ffmpeg.run(args, duration=dur, on_progress=(lambda f: on_progress(f * share)) if on_progress else None,
+                   cancel=cancel, configured=ffmpeg_path, cwd=work,
+                   error_message=f"Clip „{clip.title or clip.id}“ konnte nicht exportiert werden.")
+        if main_out != job.out:
+            _concat_intro_outro(job, main_out, nvenc, ffmpeg_path, cancel)
+        log.info("Exportiert: %s (%s, %s)", job.out, layout, "NVENC" if nvenc else "CPU")
+        if on_progress:
+            on_progress(1.0)
+        return job.out
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _concat_intro_outro(job: RenderJob, main: Path, nvenc: bool, ffmpeg_path: str, cancel) -> None:
+    parts = [p for p in (job.intro, str(main), job.outro) if p]
+    for p in parts:
+        if not Path(p).exists():
+            raise ClipForgeError(f"Intro/Outro „{p}“ nicht gefunden.", "Prüfe den Pfad in den Einstellungen.")
+    inputs, filters, labels = [], [], []
+    total = 0.0
+    for i, p in enumerate(parts):
+        info = ffmpeg.probe(p, ffmpeg_path)
+        total += info["duration"]
+        inputs += ["-i", p]
+        filters.append(f"[{i}:v]scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,"
+                       f"setsar=1,fps={job.fps},format=yuv420p[v{i}]")
+        if info["has_audio"]:
+            filters.append(f"[{i}:a]aresample=48000,aformat=channel_layouts=stereo[a{i}]")
+        else:
+            filters.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{info['duration']:.3f}[a{i}]")
+        labels.append(f"[v{i}][a{i}]")
+    filters.append(f"{''.join(labels)}concat=n={len(parts)}:v=1:a=1[v][a]")
+    ffmpeg.run([*inputs, "-filter_complex", ";".join(filters), "-map", "[v]", "-map", "[a]",
+                *encoder_args(job.codec, nvenc), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
+                str(job.out)], duration=total, cancel=cancel, configured=ffmpeg_path,
+               error_message="Intro/Outro konnten nicht angefügt werden.")
+
+
+# --------------------------------------------------------------------------- Dateinamen und Metadaten
 
 _BAD = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 
@@ -117,5 +264,7 @@ def write_metadata(clip: Clip, video_path: Path) -> Path:
         f"Viral-Score: {clip.score if clip.score is not None else '–'}/10",
         f"Grund: {'; '.join(clip.reasons)}",
     ]
+    if clip.ai_reason:
+        lines.append(f"KI: {clip.ai_reason}")
     txt.write_text("\n".join(lines), encoding="utf-8")
     return txt

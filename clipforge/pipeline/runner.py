@@ -17,6 +17,8 @@ from clipforge.core.providers import STT_PROVIDERS
 from clipforge.core.settings import Settings
 from clipforge.pipeline import audio, chat, importer, render
 from clipforge.pipeline.chat import load_chat
+from clipforge.pipeline.facecam import Facecam, detect_facecam
+from clipforge.pipeline.subtitles import SubtitleStyle
 from clipforge.pipeline.triggers import Hit
 from clipforge.pipeline.clips import STATUS_APPROVED, STATUS_EXPORTED, STATUS_REJECTED, Clip, candidates_from_hits
 from clipforge.pipeline.llm import CostEstimate, Scorer, estimate_cost
@@ -203,6 +205,7 @@ class Pipeline:
             if not confirm(estimate_cost(self.s, proj.media["duration"])):
                 raise Cancelled()
         self.transcribe(proj)
+        self.facecam(proj)
         clips = self.find_clips(proj)
         pending = [c for c in clips if c.score is None]
         if pending and self.ai_ready():
@@ -211,7 +214,59 @@ class Pipeline:
             clips = self.score(proj, clips)
         return proj, clips
 
-    # 4. Export
+    # 5. Facecam
+    def facecam(self, proj: Project, redetect: bool = False) -> Facecam | None:
+        """Reihenfolge: manuell im Projekt gesetzt > Profil des Streamers > automatische Erkennung."""
+        cur = Facecam.from_dict(proj.state.get("facecam"))
+        if cur and cur.source == "manuell" and not redetect:
+            return cur
+        src = proj.source
+        prof = Facecam.from_dict(self.s.facecam_profiles.get(src.streamer)) if src and src.streamer else None
+        if prof and not redetect:
+            prof.source = "profil"
+            proj.state["facecam"] = prof.to_dict()
+            proj.save()
+            return prof
+        if cur and not redetect:
+            return cur
+        self.progress("facecam", 0.0, "Suche Facecam …")
+        try:
+            found = detect_facecam(src.path, proj.media["duration"], cancel=self.cancel)
+        except ClipForgeError as e:
+            log.warning("Facecam-Erkennung übersprungen: %s", e)
+            self.progress("facecam", 1.0, f"Facecam-Erkennung übersprungen: {e.message}")
+            return None
+        proj.state["facecam"] = found.to_dict()
+        proj.save()
+        txt = {"overlay": "Facecam gefunden", "fullcam": "Nur-Kamera-Stream erkannt",
+               "none": "Keine Facecam gefunden"}[found.mode]
+        self.progress("facecam", 1.0, f"{txt} ({found.frames_with_face}/{found.frames_total} Bilder)")
+        return found
+
+    def set_facecam(self, proj: Project, cam_norm: list[float] | None, save_profile: bool = True) -> Facecam:
+        """Facecam von Hand festlegen (normiert x,y,b,h) und als Profil des Streamers speichern."""
+        cur = Facecam.from_dict(proj.state.get("facecam"))
+        fcm = Facecam("overlay" if cam_norm else "none", cam=cam_norm, face=cur.face if cur else None,
+                      confidence=1.0, source="manuell")
+        proj.state["facecam"] = fcm.to_dict()
+        proj.save()
+        src = proj.source
+        if save_profile and src and src.streamer:
+            self.s.facecam_profiles[src.streamer] = {**fcm.to_dict(), "source": "profil"}
+            self.s.save()
+        return fcm
+
+    # 6. Export
+    def render_job(self, proj: Project, clip: Clip, out: Path, cam: Facecam | None = None,
+                   words: list | None = None) -> render.RenderJob:
+        s = self.s
+        return render.RenderJob(
+            proj.source.path, clip, out, clip.layout or s.default_layout, s.fps, s.codec, s.use_nvenc,
+            facecam=cam, words=words if words is not None else proj.load_words(),
+            subtitle_style=SubtitleStyle.from_dict(s.subtitles), loudnorm=s.loudnorm, trim_silence=s.trim_silence,
+            watermark=s.watermark, watermark_pos=s.watermark_pos, watermark_opacity=s.watermark_opacity,
+            intro=s.intro, outro=s.outro, track_face=s.track_face, smart_crop=s.smart_crop)
+
     def export(self, proj: Project, clips: list[Clip] | None = None, only_approved: bool = False) -> list[Path]:
         all_clips = proj.load_clips()
         todo = clips if clips is not None else [
@@ -219,16 +274,19 @@ class Pipeline:
         ]
         src = proj.source
         out_dir = Path(self.s.export_dir)
+        cam = self.facecam(proj) if todo else None
+        words = proj.load_words()
         results = []
         for n, clip in enumerate(todo, 1):
+            if self.cancel.is_set():
+                raise Cancelled()
             name = render.output_name(clip, self.s, src.date, src.streamer, n)
             out = render.unique_path(out_dir / f"{name}.mp4")
-            job = render.RenderJob(src.path, clip, out, clip.layout or self.s.default_layout, self.s.fps,
-                                   self.s.codec, self.s.use_nvenc)
+            job = self.render_job(proj, clip, out, cam, words)
             label = f"Clip {n}/{len(todo)}"
             render.render(job, on_progress=lambda f, l=label, k=n: self.progress(
                 "export", ((k - 1) + f) / len(todo), f"Exportiere {l}"), cancel=self.cancel,
-                ffmpeg_path=self.s.ffmpeg_path)
+                ffmpeg_path=self.s.ffmpeg_path, media=proj.media)
             render.write_metadata(clip, out)
             clip.status, clip.export_path = STATUS_EXPORTED, str(out)
             results.append(out)

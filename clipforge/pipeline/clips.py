@@ -27,6 +27,8 @@ class Clip:
     status: str = STATUS_NEW
     ai_reason: str = ""
     export_path: str = ""
+    # Im Editor korrigierte Wörter dieses Clips: [[wort, start, ende], …] in VOD-Sekunden
+    edited_words: list[list] = field(default_factory=list)
 
     @property
     def duration(self) -> float:

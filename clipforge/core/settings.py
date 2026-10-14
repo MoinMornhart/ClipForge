@@ -84,7 +84,20 @@ class Settings:
     codec: str = "h264"  # "h264" | "hevc"
     fps: int = 30
     use_nvenc: bool = True
-    default_layout: str = "blur"
+    default_layout: str = "auto"  # auto | stack | corner | cam | blur | crop
+    smart_crop: bool = True
+    track_face: bool = True
+    facecam_profiles: dict = field(default_factory=dict)  # Streamer → Facecam (normiert)
+
+    # Untertitel und Feinschliff
+    subtitles: dict = field(default_factory=dict)  # siehe pipeline.subtitles.SubtitleStyle
+    loudnorm: bool = True  # -14 LUFS
+    trim_silence: bool = True
+    watermark: str = ""
+    watermark_pos: str = "oben-rechts"
+    watermark_opacity: float = 0.8
+    intro: str = ""
+    outro: str = ""
     filename_pattern: str = "{date}_{streamer}_{title}"
     ffmpeg_path: str = ""
 

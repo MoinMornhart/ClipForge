@@ -101,12 +101,15 @@ def run(
     cancel: threading.Event | None = None,
     configured: str = "",
     error_message: str = "FFmpeg ist bei der Verarbeitung gescheitert.",
+    cwd: str | Path | None = None,
 ) -> None:
-    """Führt ffmpeg aus. on_progress bekommt Werte von 0.0 bis 1.0."""
+    """Führt ffmpeg aus. on_progress bekommt Werte von 0.0 bis 1.0.
+    cwd: Arbeitsordner, damit Filter (Untertitel, sendcmd) kurze relative Dateinamen nutzen können –
+    Windows-Pfade mit Laufwerksdoppelpunkt müssten in Filtern sonst aufwendig maskiert werden."""
     cmd = [ffmpeg(configured), "-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-progress", "pipe:1", *args]
     log.debug("ffmpeg %s", subprocess.list2cmdline(cmd[1:]))
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                            errors="replace", creationflags=_NO_WINDOW)
+                            errors="replace", creationflags=_NO_WINDOW, cwd=str(cwd) if cwd else None)
     err_lines: list[str] = []
     t = threading.Thread(target=lambda: err_lines.extend(proc.stderr), daemon=True)
     t.start()

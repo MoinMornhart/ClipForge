@@ -167,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("analyze", "export", "run"):
         p = sub.add_parser(name)
         p.add_argument("source", help="Twitch-VOD-URL oder Pfad zu einer Videodatei")
-        p.add_argument("--layout", choices=["blur", "crop"], help="Layout für den Export")
+        p.add_argument("--layout", choices=["auto", "stack", "corner", "cam", "blur", "crop"], help="Layout für den Export")
         p.add_argument("--approved", action="store_true", help="nur freigegebene Clips exportieren")
         p.add_argument("-y", "--yes", action="store_true", help="Kostenabfrage automatisch bestätigen")
         p.add_argument("--no-ai", action="store_true", help="ohne KI-Bewertung")
