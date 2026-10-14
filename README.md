@@ -8,7 +8,7 @@
   <img alt="NVIDIA" src="https://img.shields.io/badge/GPU-CUDA%20%2B%20NVENC-76B900?logo=nvidia&logoColor=white">
   <img alt="Twitch" src="https://img.shields.io/badge/Twitch-✓-9146FF?logo=twitch&logoColor=white">
   <img alt="Kick" src="https://img.shields.io/badge/Kick-✓-53FC18?logo=kick&logoColor=black">
-  <img alt="Tests" src="https://img.shields.io/badge/Tests-33%20gr%C3%BCn-4cc98a">
+  <img alt="Tests" src="https://img.shields.io/badge/Tests-35%20gr%C3%BCn-4cc98a">
   <img alt="Lizenz" src="https://img.shields.io/badge/Lizenz-MIT-f2a93b">
 </p>
 
@@ -74,7 +74,7 @@ flowchart LR
 | **Trigger** | Sprachbefehle („clip das“, „clip it“, „das muss ein Clip werden“ …), eigene Begriffe mit unscharfer Erkennung, Chat-Spitzen bei Twitch und Kick, Lautstärkespitzen |
 | **KI** | 11 Anbieter (Claude, OpenAI, Gemini, Mistral, Groq, DeepSeek, xAI, OpenRouter, Ollama, LM Studio, eigener Server). Schnitt an Satzgrenzen, Score 1–10, Titel, Beschreibung, Hashtags |
 | **Kosten** | Schätzung vor jeder Analyse **und** tatsächlich verbrauchtes API-Guthaben pro VOD |
-| **Facecam** | Automatisch erkannt (auch wenn das Spiel Gesichter zeigt), von Hand korrigierbar, als Profil pro Streamer gespeichert |
+| **Facecam** | Automatisch erkannt, auch wenn das Spiel Gesichter zeigt **und auch ohne menschliches Gesicht** (Tier-Maskottchen wie ein Bär, VTuber, PNGtuber). Von Hand korrigierbar, als Profil pro Streamer gespeichert |
 | **Layouts** | Facecam oben, Cam-Ecke, nur Facecam, unscharfer Hintergrund, Zuschnitt, automatisch |
 | **Bild** | Gameplay-Ausschnitt nach Bewegung gewählt (Facecam wird gemieden), schwarze Kino-Balken entfernt, Gesicht sanft nachgeführt |
 | **Untertitel** | Wortgenau, aktives Wort hervorgehoben, Schrift/Farbe/Umriss/Position frei, Text vor dem Export korrigierbar |
@@ -86,10 +86,20 @@ flowchart LR
 
 ## Installation
 
-**Du brauchst:**
-- Windows 10 oder 11
-- [Python 3.11](https://www.python.org/downloads/) (`winget install Python.Python.3.11`)
-- eine NVIDIA-Grafikkarte (empfohlen; ohne läuft alles auf der CPU, nur langsamer)
+### Einfach: Setup.exe
+
+1. **[ClipForge-Setup herunterladen](https://github.com/MoinMornhart/ClipForge/releases/latest)** (ca. 18 MB).
+2. Doppelklicken. Zeigt Windows „Der Computer wurde durch Windows geschützt“, auf **Weitere Informationen → Trotzdem ausführen** klicken (die Datei ist nicht kostenpflichtig signiert).
+3. **Weiter → Installieren.** Es öffnet sich ein Fenster, das einmalig rund 3 GB an Bibliotheken lädt (Spracherkennung, Video, KI). Je nach Leitung 5 bis 20 Minuten.
+4. Fertig. ClipForge startet über das Desktop-Symbol oder das Startmenü.
+
+Du brauchst dafür **kein Python und keine Adminrechte**. Der Installer bringt eine eigene Python-Version mit und installiert nach `%LOCALAPPDATA%\Programs\ClipForge`. Belegt werden rund 3,3 GB, dazu beim ersten Start 1,6 GB für das Spracherkennungsmodell. Deinstallieren geht über **Einstellungen → Apps**.
+
+**Voraussetzungen:** Windows 10 oder 11 (64 Bit). Eine NVIDIA-Grafikkarte wird empfohlen; ohne läuft alles auf dem Prozessor, nur langsamer. FFmpeg wird bei Bedarf automatisch über winget installiert.
+
+### Für Entwickler: aus dem Quellcode
+
+Voraussetzung: [Python 3.11](https://www.python.org/downloads/) und Git.
 
 ```bat
 git clone https://github.com/MoinMornhart/ClipForge.git
@@ -97,13 +107,7 @@ cd ClipForge
 install.bat
 ```
 
-`install.bat` richtet alles ein:
-- eine eigene Python-Umgebung unter `%LOCALAPPDATA%\ClipForge`
-- alle Pakete inklusive der CUDA-Bibliotheken für die GPU
-- FFmpeg über winget, falls es fehlt
-- eine **Desktop-Verknüpfung** „ClipForge“
-
-Beim ersten Start lädt ClipForge das Spracherkennungsmodell (ca. 1,6 GB) und das Gesichtserkennungsmodell (230 KB), beides einmalig.
+`install.bat` legt eine Python-Umgebung unter `%LOCALAPPDATA%\ClipForge` an, installiert alle Pakete (inkl. CUDA-Bibliotheken), bei Bedarf FFmpeg und eine Desktop-Verknüpfung. Die Setup.exe selbst baust du mit `powershell -ExecutionPolicy Bypass -File installeruild.ps1` (braucht Inno Setup 6 und PyInstaller).
 
 ---
 
@@ -111,7 +115,7 @@ Beim ersten Start lädt ClipForge das Spracherkennungsmodell (ca. 1,6 GB) und da
 
 ### Mit der Oberfläche
 
-1. **ClipForge** über das Desktop-Symbol oder `start.bat` starten.
+1. **ClipForge** über das Desktop-Symbol oder das Startmenü starten. Du kannst eine Videodatei auch direkt auf das ClipForge-Symbol ziehen.
 2. Unter **Start** einen Twitch- oder Kick-Link einfügen oder eine Videodatei hineinziehen, dann **Analysieren**.
 3. Vor kostenpflichtigen Schritten zeigt ClipForge die geschätzten Kosten und fragt nach.
 4. Unter **Clips** jeden Clip prüfen: abspielen, Start und Ende mit dem Regler verschieben, Layout wählen, Titel und Untertitel-Text korrigieren, dann **Freigeben** oder **Verwerfen**.
@@ -224,6 +228,7 @@ Die KI bekommt das Transkript rund um den Trigger (120 s davor, 30 s danach) als
 1. ClipForge zieht 24 Bilder aus dem VOD und sucht Gesichter, in Kacheln, weil Facecam-Gesichter im Vollbild klein sind.
 2. Das Gesicht, das in fast allen Bildern an derselben Stelle ist, gehört zur Facecam. Spielfiguren bewegen sich.
 3. Der Rahmen liegt dort, wo das ruhige Kamerabild in das wechselnde Spielbild übergeht.
+4. **Kein menschliches Gesicht?** Bei einem Bären, VTuber- oder PNGtuber-Avatar sucht ClipForge ein rechteckiges Fenster, das über das ganze VOD ruhig bleibt und sich nur leicht bewegt (der Avatar), während das Spielbild ringsum wechselt. Starre Logos und Balken zählen nicht. Im Test mit einem animierten Bären wurde das Fenster auf ±1 % genau gefunden.
 
 Im Test wurden die Facecams von zwei echten Streams (Twitch, Kick) pixelgenau gefunden, auch als das Spiel selbst menschliche Gesichter zeigte. Stimmt es einmal nicht: **Clips → Facecam …** → Rechteck ziehen. ClipForge merkt sich das pro Streamer.
 
@@ -349,7 +354,7 @@ clipforge/
 │   └── runner     Ablaufsteuerung für Kommandozeile und Oberfläche
 ├── ui/            PySide6-Oberfläche
 └── cli.py         Kommandozeile
-tests/             33 Tests (pytest)
+tests/             35 Tests (pytest)
 ```
 
 **Technik:** Python 3.11, FFmpeg, yt-dlp, curl_cffi, faster-whisper (CTranslate2/CUDA), MediaPipe, OpenCV, rapidfuzz, Anthropic SDK, OpenAI SDK, PySide6.
@@ -360,7 +365,7 @@ tests/             33 Tests (pytest)
 
 ## Aktualisieren
 
-In der App: **Einstellungen → Über & Update → Jetzt aktualisieren**. ClipForge prüft beim Start automatisch auf neue Versionen. Alternativ `update.bat`. Einstellungen, Projekte und Keys bleiben erhalten.
+In der App: **Einstellungen → Über & Update → Jetzt aktualisieren**. ClipForge prüft beim Start automatisch auf neue Versionen und lädt sie direkt von GitHub, auch ohne Git. Bei der Quellcode-Variante geht es alternativ mit `update.bat`. Einstellungen, Projekte und Keys bleiben erhalten.
 
 ## Lizenz
 

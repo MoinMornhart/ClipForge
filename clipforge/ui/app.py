@@ -100,7 +100,7 @@ class MainWindow(QMainWindow):
         e.accept()
 
 
-def main() -> int:
+def main(initial: str | None = None) -> int:
     setup_logging(False)
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
@@ -117,6 +117,8 @@ def main() -> int:
     theme.apply(app)
     w = MainWindow()
     w.show()
+    if initial:  # auf ClipForge.exe gezogene Datei bzw. übergebener Link
+        w.import_page.src.setText(initial)
     return app.exec()
 
 

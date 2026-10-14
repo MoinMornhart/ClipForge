@@ -30,3 +30,8 @@ logs/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Installer-Build
+build/
+dist/
+*.spec

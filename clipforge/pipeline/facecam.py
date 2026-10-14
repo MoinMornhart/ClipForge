@@ -49,7 +49,8 @@ class Rect:
         return Rect(x, y, max(2.0, w), max(2.0, h))
 
     def norm(self, W: float, H: float) -> list[float]:
-        return [round(self.x / W, 4), round(self.y / H, 4), round(self.w / W, 4), round(self.h / H, 4)]
+        return [round(float(self.x) / W, 4), round(float(self.y) / H, 4), round(float(self.w) / W, 4),
+                round(float(self.h) / H, 4)]
 
     @classmethod
     def from_norm(cls, v: list[float], W: float, H: float) -> "Rect":
@@ -312,6 +313,58 @@ def detect_facecam(path: Path, duration: float, n_frames: int = 24, cancel: thre
     return fc
 
 
+def _overlay_without_face(frames: list[np.ndarray]) -> Facecam:
+    """Facecam ohne menschliches Gesicht (Tier-Maskottchen, VTuber-, PNGtuber-Avatar).
+
+    Gesucht wird ein rechteckiges Fenster, dessen Inhalt über das ganze VOD ruhig bleibt, sich aber leicht
+    bewegt (der Avatar), während das Spielbild ringsum ständig wechselt. Völlig starre Flächen (Logos,
+    schwarze Balken) und schmale Streifen zählen nicht.
+    """
+    import cv2
+
+    n = len(frames)
+    H, W = frames[0].shape[:2]
+    if n < 6:
+        return Facecam("none", frames_total=n)
+    s = 0.25  # verkleinert rechnen
+    small = np.stack([cv2.cvtColor(cv2.resize(f, (int(W * s), int(H * s)), interpolation=cv2.INTER_AREA),
+                                   cv2.COLOR_BGR2GRAY).astype(np.float32) for f in frames])
+    S = cv2.GaussianBlur(small.std(axis=0), (0, 0), 2)
+    hi = float(np.percentile(S, 75))
+    if hi < 8:  # Spielbild selbst zu ruhig (Menü, Standbild): keine Aussage möglich
+        return Facecam("none", frames_total=n)
+    calm = (S < 0.4 * hi).astype(np.uint8)
+    calm = cv2.morphologyEx(calm, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(calm, 8)
+    sh, sw = calm.shape
+    best, best_score = None, 0.0
+    for i in range(1, count):
+        x, y, w, h, area = stats[i]
+        frac = (w * h) / (sw * sh)
+        if not 0.015 <= frac <= 0.3 or not 0.5 <= w / max(h, 1) <= 2.6:
+            continue
+        fill = area / float(w * h)
+        if fill < 0.6:
+            continue
+        inside = S[y:y + h, x:x + w]
+        activity = float(np.percentile(inside, 90))  # der Avatar bewegt sich irgendwo im Fenster
+        if activity < 0.06 * hi:  # völlig starr: Logo, Rahmen, Balken
+            continue
+        edge = min(x, y, sw - (x + w), sh - (y + h)) / max(sw, sh)
+        corner_bonus = 1.3 if edge < 0.06 else 1.0  # Facecams sitzen meist am Rand
+        score = fill * min(activity / hi, 1.0) * corner_bonus * min(frac / 0.05, 1.0)
+        if score > best_score:
+            best, best_score = (x, y, w, h), score
+    if not best:
+        log.info("Keine Facecam gefunden (weder Gesicht noch ruhiges Fenster)")
+        return Facecam("none", frames_total=n)
+    x, y, w, h = best
+    cam = Rect(x / s, y / s, w / s, h / s).clamp(W, H)
+    log.info("Facecam ohne Gesicht erkannt (Avatar/Maskottchen): %s, Wert %.2f", cam, best_score)
+    return Facecam("overlay", cam=cam.norm(W, H), face=None, confidence=round(min(0.8, 0.3 + best_score), 2),
+                   frames_with_face=0, frames_total=n)
+
+
 def _detect(frames: list[tuple[float, np.ndarray]], cancel, detector) -> Facecam:
     det = detector or FaceDetector()
     H, W = frames[0][1].shape[:2]
@@ -336,12 +389,12 @@ def _detect(frames: list[tuple[float, np.ndarray]], cancel, detector) -> Facecam
             else:
                 clusters.append({"cx": r.cx, "cy": r.cy, "rects": [r], "frames": {fi}})
     if not clusters:
-        return Facecam("none", frames_total=len(frames))
+        return _overlay_without_face([f for _, f in frames])
     best = max(clusters, key=lambda c: (len(c["frames"]), -np.std([x.cx for x in c["rects"]])))
     share = len(best["frames"]) / len(frames)
     if share < 0.3:
-        log.info("Kein stabiles Gesicht gefunden (bester Anteil %.0f %%)", share * 100)
-        return Facecam("none", frames_with_face=len(best["frames"]), frames_total=len(frames))
+        log.info("Kein stabiles Gesicht gefunden (bester Anteil %.0f %%), suche Fenster ohne Gesicht", share * 100)
+        return _overlay_without_face([f for _, f in frames])
     face = Rect(float(np.median([r.x for r in best["rects"]])), float(np.median([r.y for r in best["rects"]])),
                 float(np.median([r.w for r in best["rects"]])), float(np.median([r.h for r in best["rects"]])))
 
