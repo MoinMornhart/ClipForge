@@ -8,7 +8,7 @@
   <img alt="NVIDIA" src="https://img.shields.io/badge/GPU-CUDA%20%2B%20NVENC-76B900?logo=nvidia&logoColor=white">
   <img alt="Twitch" src="https://img.shields.io/badge/Twitch-✓-9146FF?logo=twitch&logoColor=white">
   <img alt="Kick" src="https://img.shields.io/badge/Kick-✓-53FC18?logo=kick&logoColor=black">
-  <img alt="Tests" src="https://img.shields.io/badge/Tests-42%20gr%C3%BCn-4cc98a">
+  <img alt="Tests" src="https://img.shields.io/badge/Tests-232%20gr%C3%BCn-4cc98a">
   <img alt="Lizenz" src="https://img.shields.io/badge/Lizenz-MIT-f2a93b">
 </p>
 
@@ -17,6 +17,20 @@
 <p align="center">
   <img src="docs/assets/ui_clips.png" alt="ClipForge-Oberfläche: Clip-Liste mit Score, Player, Editor" width="100%">
 </p>
+
+---
+
+## Neu in 0.2.0 – das XXL-Update
+
+- **Handcam und markierte Objekte:** Handcam-Fenster werden erkannt oder per Rahmen festgelegt (neue Layouts „Handcam oben“, „Facecam + Handcam + Gameplay“, „Nur Handcam“). Ein markiertes Objekt, etwa ein Bär als Facecam, wird in jedem Clip wiedergefunden, verfolgt und mitgezoomt.
+- **Live-Vorschau im Facecam-Dialog:** Beim Ziehen des Rahmens erscheint sofort das fertige 9:16-Bild im gewählten Layout.
+- **Neue Oberfläche:** sanfte Seitenübergänge, kurze Meldungen, laufende Arbeit in der Seitenleiste, VOD-Karten mit Vorschaubild, Clip-Editor in Reitern, Tastenkürzel (Strg+1/2/3, Strg+Enter, Strg+Entf, Strg+Leertaste).
+- **Einstellungen neu sortiert:** Bereiche in einer Seitenleiste mit Erklärung, neuer Bereich „Facecam-Profile“.
+- **Crash-Schutz:** Fehler beenden ClipForge nicht mehr, harte Abstürze landen mit Stacktrace in `logs\crash.log`, nach einem Absturz ist das letzte VOD wieder offen. Der Starter startet ClipForge nach einem Absturz neu.
+- **4× schnellere Transkription** (Stapelverarbeitung auf der GPU).
+- **Über 40 Fehler behoben**, darunter: Bearbeitungen gingen beim Neu-Analysieren verloren, Chat-Spitzen wurden zu 90 % verschluckt, Export mit Vollbild-Kamera, Handyvideos im Hochformat und 4K-Quellen.
+- **Sicherheit:** Updates nur aus geprüften Releases, API-Keys gehen nie an fremde Server-Adressen, Videostreams dürfen keine lokalen Dateien oder Geräte im Heimnetz ansprechen.
+- **232 automatische Tests**, darunter jedes Layout mit jeder Kamera-Situation als echter FFmpeg-Lauf.
 
 ---
 
@@ -223,6 +237,11 @@ Die KI bekommt das Transkript rund um den Trigger (120 s davor, 30 s danach) als
 | **Nur Facecam** | Talk- und Reaktionsmomente (automatisch bei reinen Kamera-Streams) |
 | **Unscharfer Hintergrund** | alles sichtbar (automatisch ohne Facecam) |
 | **Zuschnitt** | Vollbild-Gameplay |
+| **Handcam oben**, Gameplay unten | Hand- oder Controller-Cam statt Gesicht (automatisch, wenn nur eine Handcam da ist) |
+| **Facecam + Handcam + Gameplay** | drei Ebenen untereinander (automatisch, wenn beides erkannt wurde) |
+| **Nur Handcam** | Handcam groß, unscharfer Hintergrund |
+
+Passt ein gewähltes Layout nicht zur Situation (z. B. „Cam-Ecke“ ohne Facecam-Fenster), nimmt ClipForge automatisch das nächstbeste. Funktioniert auch mit Handyvideos im Hochformat und mit 1440p/4K-Quellen.
 
 **So wird die Facecam gefunden:**
 1. ClipForge zieht 24 Bilder aus dem VOD und sucht Gesichter, in Kacheln, weil Facecam-Gesichter im Vollbild klein sind.
@@ -230,7 +249,11 @@ Die KI bekommt das Transkript rund um den Trigger (120 s davor, 30 s danach) als
 3. Der Rahmen liegt dort, wo das ruhige Kamerabild in das wechselnde Spielbild übergeht.
 4. **Kein menschliches Gesicht?** Bei einem Bären, VTuber- oder PNGtuber-Avatar sucht ClipForge ein rechteckiges Fenster, das über das ganze VOD ruhig bleibt und sich nur leicht bewegt (der Avatar), während das Spielbild ringsum wechselt. Starre Logos und Balken zählen nicht. Im Test mit einem animierten Bären wurde das Fenster auf ±1 % genau gefunden.
 
-Im Test wurden die Facecams von zwei echten Streams (Twitch, Kick) pixelgenau gefunden, auch als das Spiel selbst menschliche Gesichter zeigte. Stimmt es einmal nicht: **Clips → Facecam …** → Rechteck ziehen. ClipForge merkt sich das pro Streamer.
+Im Test wurden die Facecams von zwei echten Streams (Twitch, Kick) pixelgenau gefunden, auch als das Spiel selbst menschliche Gesichter zeigte. Stimmt es einmal nicht: **Clips → Facecam …** → Rechteck ziehen. Rechts erscheint sofort die 9:16-Vorschau. ClipForge merkt sich das pro Streamer (verwalten unter **Einstellungen → Facecam-Profile**).
+
+**Handcam:** ClipForge erkennt Hände (MediaPipe) in einem ruhigen Kamerafenster außerhalb der Facecam. Im Facecam-Dialog lässt sich die Handcam auch selbst markieren („③ Handcam-Rahmen ziehen“).
+
+**Objekt markieren (z. B. Bär, Maskottchen):** Im Facecam-Dialog „② Objekt markieren“ wählen und das Objekt einrahmen. ClipForge speichert einen Bildausschnitt, findet das Objekt in jedem Clip wieder (SIFT-Merkmale, sonst Vorlagenvergleich), folgt ihm und zoomt mit, wenn es näher kommt. Ist das Cam-Fenster in einem neuen VOD verschoben, wird es über das Objekt wiedergefunden.
 
 ---
 
@@ -346,15 +369,16 @@ clipforge/
 │   ├── chat       Twitch- und Kick-Chat, Chat-Spitzen
 │   ├── audio      Lautstärkespitzen
 │   ├── llm        KI-Bewertung, Kostenschätzung, alle Anbieter
-│   ├── facecam    Facecam-Erkennung, Gameplay-Ausschnitt, Balken, Nachführung
-│   ├── layouts    5 Layouts als FFmpeg-Filter
+│   ├── facecam    Facecam-/Handcam-Erkennung, Objektverfolgung, Gameplay-Ausschnitt, Balken
+│   ├── kick       Kick-VODs auflösen (auch neues Link-Format)
+│   ├── layouts    8 Layouts als FFmpeg-Filter
 │   ├── subtitles  TikTok-Untertitel (ASS)
 │   ├── render     Export mit NVENC, Lautheit, Wasserzeichen, Intro/Outro
 │   ├── project    Zustand und tatsächliche Kosten je VOD
 │   └── runner     Ablaufsteuerung für Kommandozeile und Oberfläche
 ├── ui/            PySide6-Oberfläche
 └── cli.py         Kommandozeile
-tests/             42 Tests (pytest)
+tests/             232 Tests (pytest, Abdeckung messen: pytest --cov=clipforge)
 ```
 
 **Technik:** Python 3.11, FFmpeg, yt-dlp, curl_cffi, faster-whisper (CTranslate2/CUDA), MediaPipe, OpenCV, rapidfuzz, Anthropic SDK, OpenAI SDK, PySide6.
