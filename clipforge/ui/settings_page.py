@@ -1,12 +1,12 @@
-"""Einstellungen: KI und API-Keys, Transkription, Trigger, Clips, Untertitel, Export, Updates."""
+"""Einstellungen: Bereiche links (KI, Transkription, Trigger, Clips, Untertitel, Facecam-Profile, Export, Update)."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import QSize, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont
-from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox, QFileDialog, QFontComboBox,
+from PySide6.QtWidgets import (QFrame, QListWidget, QListWidgetItem, QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox, QFileDialog, QFontComboBox,
                                QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
-                               QScrollArea, QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout,
+                               QScrollArea, QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
                                QWidget)
 
 from clipforge import __version__
@@ -16,6 +16,7 @@ from clipforge.core.settings import Settings, Trigger
 from clipforge.pipeline.layouts import LAYOUTS
 from clipforge.pipeline.llm import list_models
 from clipforge.pipeline.subtitles import SubtitleStyle
+from clipforge.ui.anim import AnimatedStack
 from clipforge.ui.worker import Task
 
 
@@ -92,6 +93,16 @@ class TriggerTable(QTableWidget):
         return out
 
 
+class _NavShim:
+    """Kompatibilität: settings_page.tabs.setCurrentIndex(i) wählt den Bereich i."""
+
+    def __init__(self, nav):
+        self.nav = nav
+
+    def setCurrentIndex(self, i: int):
+        self.nav.setCurrentRow(i)
+
+
 class SettingsPage(QWidget):
     saved = Signal()
     status_message = Signal(str)
@@ -105,15 +116,54 @@ class SettingsPage(QWidget):
         h = QLabel("Einstellungen")
         h.setObjectName("h1")
         root.addWidget(h)
-        self.tabs = QTabWidget()
-        root.addWidget(self.tabs, 1)
-        self.tabs.addTab(_scroll(self._tab_ai()), "KI && API-Keys")
-        self.tabs.addTab(_scroll(self._tab_stt()), "Transkription")
-        self.tabs.addTab(_scroll(self._tab_triggers()), "Trigger")
-        self.tabs.addTab(_scroll(self._tab_clips()), "Clips")
-        self.tabs.addTab(_scroll(self._tab_subs()), "Untertitel")
-        self.tabs.addTab(_scroll(self._tab_export()), "Export")
-        self.tabs.addTab(_scroll(self._tab_update()), "Über && Update")
+        # Bereiche links, Inhalt rechts – jeder Bereich mit kurzer Erklärung
+        body = QHBoxLayout()
+        self.section_nav = QListWidget()
+        self.section_nav.setObjectName("nav")
+        self.section_nav.setFixedWidth(220)
+        self.section_stack = AnimatedStack()
+        sections = [
+            ("🤖  KI & API-Keys", "KI & API-Keys", "Welche KI die Clips bewertet und sinnvoll schneidet. Keys liegen sicher in "
+             "der Windows-Anmeldeinformationsverwaltung, nie in Dateien.", self._tab_ai),
+            ("🎙  Transkription", "Transkription", "Wie das Gesagte in Text mit Zeitstempeln umgewandelt wird. Lokal ist "
+             "kostenlos und läuft auf deiner Grafikkarte.", self._tab_stt),
+            ("🔎  Trigger", "Trigger", "Woran ClipForge gute Momente erkennt: Sprachbefehle, eigene Begriffe, Chat- und "
+             "Lautstärkespitzen.", self._tab_triggers),
+            ("✂  Clips", "Clips", "Wie lang die fertigen Clips sein dürfen.", self._tab_clips),
+            ("💬  Untertitel", "Untertitel", "Aussehen der wortgenauen Untertitel im TikTok-Stil.", self._tab_subs),
+            ("🙂  Facecam-Profile", "Facecam-Profile", "Gespeicherte Facecam-, Objekt- und Handcam-Rahmen je Streamer. "
+             "Neue Profile legst du unter Clips → Facecam … an.", self._tab_profiles),
+            ("📦  Export", "Export", "Wohin und wie exportiert wird: Format, Layout, Ton, Wasserzeichen, Intro/Outro.",
+             self._tab_export),
+            ("ℹ  Über & Update", "Über & Update", "Version, Updates und Logdatei.", self._tab_update),
+        ]
+        for label, title, desc, build in sections:
+            it = QListWidgetItem(label)
+            it.setSizeHint(QSize(200, 40))
+            self.section_nav.addItem(it)
+            page = QWidget()
+            pl = QVBoxLayout(page)
+            pl.setContentsMargins(4, 0, 0, 0)
+            h = QLabel(title)
+            h.setObjectName("h2")
+            d = QLabel(desc)
+            d.setObjectName("muted")
+            d.setWordWrap(True)
+            pl.addWidget(h)
+            pl.addWidget(d)
+            card = QFrame()
+            card.setObjectName("card")
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(0, 0, 0, 0)
+            cl.addWidget(_scroll(build()))
+            pl.addWidget(card, 1)
+            self.section_stack.addWidget(page)
+        self.section_nav.currentRowChanged.connect(self.section_stack.slide_to)
+        self.section_nav.setCurrentRow(0)
+        body.addWidget(self.section_nav)
+        body.addWidget(self.section_stack, 1)
+        root.addLayout(body, 1)
+        self.tabs = _NavShim(self.section_nav)
         # Zahlenfelder und Auswahllisten nicht über die ganze Breite ziehen
         from PySide6.QtWidgets import QAbstractSpinBox
 
@@ -427,6 +477,50 @@ class SettingsPage(QWidget):
         self.max_words = QSpinBox(minimum=1, maximum=8, value=st.max_words)
         f.addRow("Wörter pro Einblendung", self.max_words)
         return w
+
+    # ------------------------------------------------------------------ Facecam-Profile
+    def _tab_profiles(self) -> QWidget:
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(18, 18, 18, 18)
+        self.profiles = QTableWidget(0, 5)
+        self.profiles.setHorizontalHeaderLabels(["Streamer", "Facecam", "Objekt", "Handcam", ""])
+        self.profiles.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.profiles.verticalHeader().hide()
+        self.profiles.setEditTriggers(QTableWidget.NoEditTriggers)
+        v.addWidget(self.profiles, 1)
+        self._fill_profiles()
+        return w
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._fill_profiles()  # Profile können inzwischen im Facecam-Dialog angelegt worden sein
+
+    def _fill_profiles(self):
+        profs = Settings.load().facecam_profiles
+        self.profiles.setRowCount(0)
+        for name, d in sorted(profs.items()):
+            r = self.profiles.rowCount()
+            self.profiles.insertRow(r)
+            self.profiles.setItem(r, 0, QTableWidgetItem(name))
+            self.profiles.setItem(r, 1, QTableWidgetItem("✓" if d.get("cam") and d.get("mode") == "overlay" else "–"))
+            self.profiles.setItem(r, 2, QTableWidgetItem("✓" if d.get("subject_file") else "–"))
+            self.profiles.setItem(r, 3, QTableWidgetItem("✓" if d.get("handcam") else "–"))
+            b = QPushButton("Löschen")
+            b.clicked.connect(lambda _=False, n=name: self._delete_profile(n))
+            self.profiles.setCellWidget(r, 4, b)
+        if not profs:
+            self.profiles.insertRow(0)
+            self.profiles.setItem(0, 0, QTableWidgetItem("Noch keine Profile – unter Clips → Facecam … anlegen."))
+            self.profiles.setSpan(0, 0, 1, 5)
+
+    def _delete_profile(self, name: str):
+        s = Settings.load()
+        s.facecam_profiles.pop(name, None)
+        s.save()
+        self.s = s
+        self._fill_profiles()
+        self.status_message.emit(f"Facecam-Profil „{name}“ gelöscht.")
 
     # ------------------------------------------------------------------ Export
     def _tab_export(self) -> QWidget:
