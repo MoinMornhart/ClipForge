@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Secrets – API-Keys gehören in die Windows-Anmeldeinformationsverwaltung, nie ins Repo
+.env
+*.key
+secrets*.json
+
+# Medien und Arbeitsdaten
+*.mp4
+*.mkv
+*.wav
+*.m4a
+*.webm
+*.part
+*.ass
+work/
+exports/
+logs/
+*.log
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
