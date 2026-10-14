@@ -56,15 +56,15 @@ def candidates_from_hits(hits: list[Hit], duration: float, s: Settings) -> list[
         if end - start < s.min_clip_seconds:
             missing = s.min_clip_seconds - (end - start)
             start = max(0.0, start - missing)
-        if end - start > s.max_clip_seconds:
-            start = end - s.max_clip_seconds
+        if end - start > s.effective_max_seconds:
+            start = end - s.effective_max_seconds
         raw.append(Clip(start=round(start, 2), end=round(end, 2), trigger_time=h.time, reasons=[h.reason]))
 
     merged: list[Clip] = []
     for c in sorted(raw, key=lambda c: c.start):
         if merged:
             last = merged[-1]
-            if c.start - last.end <= s.merge_gap_seconds and max(c.end, last.end) - last.start <= s.max_clip_seconds:
+            if c.start - last.end <= s.merge_gap_seconds and max(c.end, last.end) - last.start <= s.effective_max_seconds:
                 last.end = max(last.end, c.end)
                 last.reasons += [r for r in c.reasons if r not in last.reasons]
                 continue

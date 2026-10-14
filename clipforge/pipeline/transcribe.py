@@ -83,27 +83,40 @@ class LocalWhisper:
         return words
 
 
-class OpenAIWhisper:
-    """OpenAI-Transkriptions-API (whisper-1 liefert Wortzeitstempel)."""
+class ApiWhisper:
+    """Transkriptions-API mit Wortzeitstempeln (OpenAI whisper-1, Groq whisper-large-v3[-turbo])."""
 
-    def __init__(self, api_key: str, model: str = "whisper-1"):
+    audio_ext = ".mp3"  # kleiner Upload; 10 min ≈ 5 MB (Grenze bei OpenAI: 25 MB)
+
+    def __init__(self, provider_name: str, base_url: str, api_key: str, model: str):
+        self.provider_name = provider_name
+        self.base_url = base_url
         self.api_key = api_key
         self.model = model
 
     def transcribe(self, wav: Path, language: str | None) -> list[Word]:
-        from openai import OpenAI
+        import openai
 
-        client = OpenAI(api_key=self.api_key)
+        client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
+        extra = {"language": language} if language else {}
         try:
             with open(wav, "rb") as f:
                 r = client.audio.transcriptions.create(
-                    model=self.model, file=f, language=language or None,
-                    response_format="verbose_json", timestamp_granularities=["word"],
+                    model=self.model, file=f, response_format="verbose_json",
+                    timestamp_granularities=["word"], **extra,
                 )
-        except Exception as e:
-            raise ClipForgeError("Die OpenAI-Transkription ist fehlgeschlagen.",
-                                 "Prüfe deinen OpenAI-API-Key und dein Guthaben.", str(e)) from e
-        return [Word(w.word.strip(), round(w.start, 3), round(w.end, 3)) for w in (r.words or [])]
+        except openai.AuthenticationError as e:
+            raise ClipForgeError(f"{self.provider_name} lehnt den API-Key ab.",
+                                 "Prüfe den Key in den Einstellungen.", str(e)) from e
+        except openai.RateLimitError as e:
+            raise ClipForgeError(f"{self.provider_name}: Limit erreicht oder kein Guthaben.",
+                                 "Warte kurz oder lade Guthaben auf. Die Analyse setzt beim nächsten Start fort.",
+                                 str(e)) from e
+        except openai.APIError as e:
+            raise ClipForgeError(f"Die Transkription bei {self.provider_name} ist fehlgeschlagen.",
+                                 "Details stehen in der Logdatei.", str(e)) from e
+        words = getattr(r, "words", None) or []
+        return [Word(w.word.strip(), round(w.start, 3), round(w.end, 3)) for w in words]
 
 
 def chunk_plan(duration: float, chunk_seconds: float) -> list[tuple[float, float]]:
@@ -113,9 +126,10 @@ def chunk_plan(duration: float, chunk_seconds: float) -> list[tuple[float, float
 
 
 def extract_audio(src: Path, dst: Path, start: float, length: float, cancel=None, ffmpeg_path: str = "") -> None:
+    codec = ["-c:a", "libmp3lame", "-b:a", "64k"] if dst.suffix == ".mp3" else ["-c:a", "pcm_s16le"]
     ffmpeg.run(
         ["-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", str(src), "-vn", "-ac", "1", "-ar", "16000",
-         "-c:a", "pcm_s16le", str(dst)],
+         *codec, str(dst)],
         cancel=cancel, configured=ffmpeg_path, error_message="Die Tonspur konnte nicht gelesen werden.",
     )
 
@@ -149,7 +163,7 @@ def transcribe_source(
                 on_progress(i / len(plan), f"Transkribiere {label}")
             a_start = max(0.0, cs - OVERLAP)
             a_len = (ce - a_start) + (OVERLAP if ce < duration else 0.0)
-            wav = out.with_suffix(".wav")
+            wav = out.with_suffix(getattr(backend, "audio_ext", ".wav"))
             extract_audio(src, wav, a_start, a_len, cancel, ffmpeg_path)
             try:
                 raw = backend.transcribe(wav, language)

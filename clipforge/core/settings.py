@@ -39,7 +39,8 @@ class Trigger:
 @dataclass
 class Settings:
     # Transkription
-    transcription_backend: str = "local"  # "local" (faster-whisper) | "openai"
+    transcription_backend: str = "local"  # Schlüssel aus providers.STT_PROVIDERS
+    stt_api_model: str = ""  # leer = Standardmodell des Anbieters
     whisper_model: str = "large-v3-turbo"
     whisper_device: str = "cuda"  # "cuda" | "cpu"
     language: str = "de"  # "" = automatisch
@@ -56,9 +57,19 @@ class Settings:
     max_clip_seconds: float = 60.0
     merge_gap_seconds: float = 10.0
 
-    # KI
-    llm_provider: str = "anthropic"  # "anthropic" | "openai" | "none"
-    llm_model: str = "claude-sonnet-5-5"
+    # KI-Bewertung
+    ai_enabled: bool = True
+    llm_provider: str = "anthropic"  # Schlüssel aus providers.LLM_PROVIDERS
+    llm_model: str = "claude-opus-5-5"
+    llm_base_url: str = ""  # nur für "custom" bzw. abweichende lokale Ports
+    llm_effort: str = "medium"  # nur Claude: low | medium | high
+    context_before: float = 120.0  # Sekunden Transkript vor dem Trigger, die die KI sieht
+    context_after: float = 30.0
+    min_score: int = 0  # Clips unter diesem Viral-Score automatisch verwerfen (0 = aus)
+    # Eigene Preise je Modell: {"modell": [Eingabe $/1M, Ausgabe $/1M]}
+    price_overrides: dict = field(default_factory=dict)
+    # Höchstlänge je Plattform (Sekunden); der kleinste aktive Wert begrenzt die Clips
+    platforms: dict = field(default_factory=lambda: {"TikTok": 180, "YouTube Shorts": 180, "Instagram Reels": 180})
 
     # Export
     download_dir: str = field(default_factory=lambda: str(default_download_dir()))
@@ -93,6 +104,11 @@ class Settings:
 
     def save(self) -> None:
         self.path().write_text(json.dumps(asdict(self), indent=2, ensure_ascii=False), encoding="utf-8")
+
+    @property
+    def effective_max_seconds(self) -> float:
+        caps = [v for v in self.platforms.values() if v]
+        return min([self.max_clip_seconds, *caps])
 
     def all_triggers(self) -> list[tuple[str, Trigger]]:
         return [("Sprachbefehl", t) for t in self.voice_triggers if t.enabled] + [

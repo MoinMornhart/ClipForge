@@ -7,9 +7,10 @@ import keyring
 from keyring.errors import KeyringError
 
 from clipforge.core.errors import ClipForgeError
+from clipforge.core.providers import KEY_PROVIDERS
 
 SERVICE = "ClipForge"
-PROVIDERS = ("anthropic", "openai")
+PROVIDERS = KEY_PROVIDERS
 
 
 def get_key(provider: str) -> str | None:

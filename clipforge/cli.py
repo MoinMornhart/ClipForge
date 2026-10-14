@@ -58,9 +58,58 @@ def cmd_check(_args) -> int:
         print("CUDA-GPU:", "ja" if ctranslate2.get_cuda_device_count() > 0 else "nein (CPU-Transkription)")
     except Exception as e:
         print("CUDA-GPU: nein –", e)
+    from clipforge.core.providers import LLM_PROVIDERS
+
+    print(f"KI-Anbieter: {LLM_PROVIDERS[s.llm_provider].name if s.llm_provider in LLM_PROVIDERS else s.llm_provider}"
+          f" · Modell: {s.llm_model or '–'}")
     for p in secrets.PROVIDERS:
-        print(f"API-Key {p}:", secrets.mask(secrets.get_key(p)))
+        print(f"API-Key {LLM_PROVIDERS[p].name:<36}", secrets.mask(secrets.get_key(p)))
     return 0
+
+
+def cmd_key(args) -> int:
+    import getpass
+
+    from clipforge.core import secrets
+    from clipforge.core.providers import LLM_PROVIDERS
+
+    if args.action == "list" or not args.provider:
+        for pid, p in LLM_PROVIDERS.items():
+            state = secrets.mask(secrets.get_key(pid)) if p.needs_key or pid == "custom" else "kein Key nötig"
+            print(f"  {pid:<11} {p.name:<36} {state}")
+        return 0
+    if args.provider not in LLM_PROVIDERS:
+        print(f"Unbekannter Anbieter. Möglich: {', '.join(LLM_PROVIDERS)}", file=sys.stderr)
+        return 2
+    if args.action == "delete":
+        secrets.delete_key(args.provider)
+        print("Key gelöscht.")
+        return 0
+    key = getpass.getpass(f"API-Key für {LLM_PROVIDERS[args.provider].name} (Eingabe bleibt unsichtbar): ")
+    secrets.set_key(args.provider, key)
+    print("Gespeichert in der Windows-Anmeldeinformationsverwaltung." if key.strip() else "Leer – Key entfernt.")
+    return 0
+
+
+def cmd_models(args) -> int:
+    from clipforge.pipeline.llm import list_models
+
+    for m in list_models(Settings.load(), args.provider):
+        print(" ", m)
+    return 0
+
+
+def _confirm_factory(auto_yes: bool):
+    def confirm(est) -> bool:
+        print(f"\nGeschätzte Kosten: {est.text()}")
+        if auto_yes:
+            return True
+        try:
+            return input("Fortfahren? [J/n] ").strip().lower() in ("", "j", "ja", "y", "yes")
+        except EOFError:
+            return False
+
+    return confirm
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -72,25 +121,48 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("source", help="Twitch-VOD-URL oder Pfad zu einer Videodatei")
         p.add_argument("--layout", choices=["blur", "crop"], help="Layout für den Export")
         p.add_argument("--approved", action="store_true", help="nur freigegebene Clips exportieren")
+        p.add_argument("-y", "--yes", action="store_true", help="Kostenabfrage automatisch bestätigen")
+        p.add_argument("--no-ai", action="store_true", help="ohne KI-Bewertung")
     sub.add_parser("check")
+    k = sub.add_parser("key", help="API-Keys verwalten")
+    k.add_argument("action", choices=["set", "delete", "list"])
+    k.add_argument("provider", nargs="?")
+    m = sub.add_parser("models", help="verfügbare Modelle eines Anbieters anzeigen")
+    m.add_argument("provider", nargs="?")
     args = ap.parse_args(argv)
     setup_logging(args.verbose)
 
-    if args.cmd == "check":
-        return cmd_check(args)
+    try:
+        if args.cmd == "check":
+            return cmd_check(args)
+        if args.cmd == "key":
+            return cmd_key(args)
+        if args.cmd == "models":
+            return cmd_models(args)
+    except ClipForgeError as e:
+        print(f"Fehler: {e}", file=sys.stderr)
+        return 1
 
     from clipforge.pipeline.runner import Pipeline
 
     s = Settings.load()
     if args.layout:
         s.default_layout = args.layout
+    if args.no_ai:
+        s.ai_enabled = False
     cancel = threading.Event()
     pipe = Pipeline(s, _progress_printer(), cancel)
     try:
-        proj, clips = pipe.analyze(args.source)
+        proj, clips = pipe.analyze(args.source, confirm=_confirm_factory(args.yes))
         print(f"\n{len(clips)} Clip(s) gefunden:")
         for i, c in enumerate(clips, 1):
-            print(f"  {i:2d}. {_fmt(c.start)}–{_fmt(c.end)} ({c.duration:.0f} s)  {'; '.join(c.reasons)}")
+            score = f"[{c.score:.0f}/10] " if c.score is not None else ""
+            print(f"  {i:2d}. {score}{_fmt(c.start)}–{_fmt(c.end)} ({c.duration:.0f} s)  {c.title or ''}")
+            print(f"      Grund: {'; '.join(c.reasons)}")
+            if c.ai_reason:
+                print(f"      KI: {c.ai_reason}")
+            if c.hashtags:
+                print(f"      {' '.join(c.hashtags)}")
         if args.cmd in ("export", "run") and clips:
             paths = pipe.export(proj, only_approved=args.approved)
             for p in paths:

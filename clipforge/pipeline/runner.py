@@ -11,13 +11,15 @@ from pathlib import Path
 from typing import Callable
 
 from clipforge.core import ffmpeg, secrets
-from clipforge.core.errors import ClipForgeError
+from clipforge.core.errors import Cancelled, ClipForgeError
 from clipforge.core.log import get_logger
+from clipforge.core.providers import STT_PROVIDERS
 from clipforge.core.settings import Settings
 from clipforge.pipeline import importer, render
 from clipforge.pipeline.clips import STATUS_APPROVED, STATUS_EXPORTED, STATUS_REJECTED, Clip, candidates_from_hits
+from clipforge.pipeline.llm import CostEstimate, Scorer, estimate_cost
 from clipforge.pipeline.project import Project
-from clipforge.pipeline.transcribe import LocalWhisper, OpenAIWhisper, transcribe_source
+from clipforge.pipeline.transcribe import ApiWhisper, LocalWhisper, transcribe_source
 from clipforge.pipeline.triggers import find_hits
 
 log = get_logger("runner")
@@ -61,14 +63,15 @@ class Pipeline:
     # 2. Transkript
     def backend(self):
         if self._backend is None:
-            if self.s.transcription_backend == "openai":
-                key = secrets.get_key("openai")
-                if not key:
-                    raise ClipForgeError("Für die OpenAI-Transkription fehlt der API-Key.",
-                                         "Trage ihn in den Einstellungen ein oder wähle die lokale Transkription.")
-                self._backend = OpenAIWhisper(key)
-            else:
+            prov = STT_PROVIDERS.get(self.s.transcription_backend)
+            if prov is None or prov.id == "local":
                 self._backend = LocalWhisper(self.s.whisper_model, self.s.whisper_device)
+            else:
+                key = secrets.get_key(prov.id)
+                if not key:
+                    raise ClipForgeError(f"Für die Transkription über {prov.name} fehlt der API-Key.",
+                                         "Trage ihn in den Einstellungen ein oder wähle die lokale Transkription.")
+                self._backend = ApiWhisper(prov.name, prov.base_url, key, self.s.stt_api_model or prov.default_model)
         return self._backend
 
     def transcribe(self, proj: Project) -> None:
@@ -98,15 +101,74 @@ class Pipeline:
             if prev:
                 c.id, c.status, c.title, c.layout = prev.id, prev.status, prev.title, prev.layout
                 c.score, c.description, c.hashtags = prev.score, prev.description, prev.hashtags
+                if prev.score is not None:  # von der KI oder von Hand gesetzte Grenzen behalten
+                    c.start, c.end, c.ai_reason = prev.start, prev.end, prev.ai_reason
         proj.save_clips(clips)
         proj.mark("triggers")
         self.progress("triggers", 1.0, f"{len(hits)} Trigger, {len(clips)} Clips gefunden")
         return clips
 
-    def analyze(self, ref: str) -> tuple[Project, list[Clip]]:
+    # 4. KI-Bewertung
+    def ai_ready(self) -> bool:
+        from clipforge.core.providers import LLM_PROVIDERS
+
+        p = LLM_PROVIDERS.get(self.s.llm_provider)
+        if not self.s.ai_enabled or p is None:
+            return False
+        if p.needs_key and not secrets.get_key(p.id):
+            self.progress("score", 1.0, f"KI-Bewertung übersprungen: kein API-Key für {p.name}")
+            return False
+        return True
+
+    def estimate(self, proj: Project, clips: list[Clip] | None = None) -> CostEstimate:
+        words = proj.load_words() if clips is not None else None
+        return estimate_cost(self.s, proj.media.get("duration", 0.0), clips, words)
+
+    def score(self, proj: Project, clips: list[Clip]) -> list[Clip]:
+        if not self.s.ai_enabled or self.s.llm_provider == "none":
+            return clips
+        todo = [c for c in clips if c.score is None]
+        if not todo:
+            return clips
+        try:
+            scorer = Scorer(self.s)
+        except ClipForgeError as e:
+            # Ohne Key/Modell läuft alles weiter, nur ohne KI-Bewertung
+            log.warning("KI-Bewertung übersprungen: %s", e)
+            self.progress("score", 1.0, f"KI-Bewertung übersprungen: {e.message}")
+            return clips
+        words = proj.load_words()
+        duration = proj.media["duration"]
+        for n, clip in enumerate(todo, 1):
+            if self.cancel.is_set():
+                raise Cancelled()
+            self.progress("score", (n - 1) / len(todo), f"KI bewertet Clip {n}/{len(todo)}")
+            scorer.score_clip(clip, words, duration)
+            if self.s.min_score and clip.score is not None and clip.score < self.s.min_score:
+                clip.status = STATUS_REJECTED
+            proj.save_clips(clips)  # nach jedem Clip sichern: Abbruch verliert nichts
+        clips.sort(key=lambda c: -(c.score or 0))
+        proj.save_clips(clips)
+        cost = scorer.cost_usd()
+        used = f"{scorer.usage.input_tokens + scorer.usage.output_tokens:,} Tokens".replace(",", ".")
+        self.progress("score", 1.0, f"{len(todo)} Clips bewertet · {used}"
+                      + (f" · {cost:.3f} $" if cost is not None else ""))
+        return clips
+
+    def analyze(self, ref: str, confirm: Callable[[CostEstimate], bool] | None = None) -> tuple[Project, list[Clip]]:
+        """confirm wird vor kostenpflichtigen Schritten mit der Schätzung aufgerufen; False bricht ab."""
         proj = self.open(ref)
+        if confirm and self.s.transcription_backend != "local" and not proj.done("transcribe"):
+            if not confirm(estimate_cost(self.s, proj.media["duration"])):
+                raise Cancelled()
         self.transcribe(proj)
-        return proj, self.find_clips(proj)
+        clips = self.find_clips(proj)
+        pending = [c for c in clips if c.score is None]
+        if pending and self.ai_ready():
+            if confirm and not confirm(self.estimate(proj, pending)):
+                return proj, clips
+            clips = self.score(proj, clips)
+        return proj, clips
 
     # 4. Export
     def export(self, proj: Project, clips: list[Clip] | None = None, only_approved: bool = False) -> list[Path]:
