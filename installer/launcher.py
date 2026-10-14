@@ -33,9 +33,28 @@ def main() -> int:
             message("Die Einrichtung ist fehlgeschlagen. Details stehen im Einrichtungsfenster.\n\n"
                     "Prüfe die Internetverbindung und starte ClipForge erneut.")
             return 1
-    subprocess.Popen([str(pyw), "-m", "clipforge", "--gui", *sys.argv[1:]], cwd=base,
-                     creationflags=DETACHED | NO_WINDOW)
-    return 0
+    # Wächter: stürzt ClipForge ab, Neustart anbieten (das zuletzt geöffnete VOD wird wieder geöffnet).
+    # Höchstens 3 Neustarts in 5 Minuten, damit ein dauerhafter Fehler nicht endlos neu startet.
+    import time
+
+    args = sys.argv[1:]
+    restarts: list[float] = []
+    while True:
+        started = time.time()
+        code = subprocess.call([str(pyw), "-m", "clipforge", "--gui", *args], cwd=base, creationflags=NO_WINDOW)
+        if code == 0:
+            return 0
+        restarts = [t for t in restarts if started - t < 300] + [started]
+        log = Path.home() / "AppData" / "Local" / "ClipForge" / "logs"
+        if len(restarts) > 3:
+            message("ClipForge ist mehrfach kurz hintereinander abgestürzt.\n\nDetails stehen in\n"
+                    f"{log}\\crash.log und clipforge.log.\n\nBitte diese Dateien an den Entwickler schicken.")
+            return code
+        if message(f"ClipForge wurde unerwartet beendet (Code {code & 0xFFFFFFFF:#x}).\n\n"
+                   "Jetzt neu starten? Das zuletzt geöffnete VOD wird wieder geöffnet, eine laufende Analyse "
+                   "geht an derselben Stelle weiter.", flags=0x34) != 6:  # Ja = 6
+            return code
+        args = []  # Datei/Link nicht erneut übergeben – die Sitzung wird wiederhergestellt
 
 
 if __name__ == "__main__":

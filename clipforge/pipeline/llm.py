@@ -250,7 +250,10 @@ class Scorer:
             else:
                 resp = self._client.messages.create(**kwargs)
         except anthropic.AuthenticationError as e:
-            raise ClipForgeError("Anthropic lehnt den API-Key ab.", "Prüfe den Key in den Einstellungen.", str(e)) from e
+            raise ClipForgeError(
+                "Anthropic lehnt den API-Key ab.",
+                "Erstelle einen API-Key unter console.anthropic.com → API Keys (er beginnt mit „sk-ant-api…“) und "
+                "füge ihn vollständig ein. Ein Claude-Abo (claude.ai) enthält keinen API-Key.", str(e)) from e
         except anthropic.PermissionDeniedError as e:
             raise ClipForgeError("Der Anthropic-Key hat keine Berechtigung für dieses Modell.",
                                  "Wähle ein anderes Modell oder prüfe dein Konto.", str(e)) from e
