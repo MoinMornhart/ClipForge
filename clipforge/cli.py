@@ -179,7 +179,17 @@ def _confirm_factory(auto_yes: bool):
     return confirm
 
 
+def _utf8_console() -> None:
+    """Windows-Konsolen mit alter Codepage (cp1252/cp850) stürzen sonst bei „→“, Emojis in VOD-Titeln usw. ab."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_console()
     ap = argparse.ArgumentParser(prog="clipforge", description="Clips aus Twitch-VODs finden und im Hochformat exportieren.")
     ap.add_argument("-v", "--verbose", action="store_true", help="ausführliche Ausgabe")
     sub = ap.add_subparsers(dest="cmd", required=True)

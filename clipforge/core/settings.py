@@ -56,7 +56,7 @@ class Settings:
     chat_sensitivity: float = 3.0  # kleiner = mehr Chat-Spitzen
     chat_min_messages: int = 8  # Mindestanzahl Nachrichten in 10 s
     use_audio_peaks: bool = True
-    audio_above_db: float = 10.0  # so viel lauter als üblich
+    audio_above_db: float = 11.0  # so viel lauter als üblich (im Test: 10 dB zu empfindlich, 12 dB zu streng)
     audio_min_level_db: float = -22.0
 
     # Clips

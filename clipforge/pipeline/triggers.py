@@ -35,7 +35,7 @@ _STOP = {normalize(w) for w in (
     "das des dis der die den dem ein eine einen einer ist es is it that this the a an muss mus werden wird "
     "und and jetzt mal bitte doch so ja oh"
 ).split()}
-ANCHOR_MIN = 75  # Mindestähnlichkeit je Kernwort
+ANCHOR_MIN = 80  # Mindestähnlichkeit je Kernwort („flip“ ≈ „clip“ hat 75 % – im Test ein Fehlalarm)
 
 
 def anchors(phrase_norm: str) -> list[str]:

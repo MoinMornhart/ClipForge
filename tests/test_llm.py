@@ -40,6 +40,42 @@ def test_apply_result_respects_min_and_max():
     assert clip.duration >= 15
 
 
+def test_sloppy_model_answer_is_repaired():
+    # Echte Antwort eines kleinen lokalen Modells: Hashtags als Text, Zahlen als Text
+    s = Settings()
+    lines = make_lines(speech(30), 0, 200)
+    clip = Clip(start=0, end=10, trigger_time=50, reasons=["Chat-Spitze"])
+    apply_result(clip, {"start_line": "L3", "end_line": "12", "score": "8/10", "title": "T", "description": "",
+                        "hashtags": "#Twitch #Letzter Boss, gaming", "reason": ""}, lines, s, 200)
+    assert clip.hashtags == ["#Twitch", "#Letzter", "#Boss", "#gaming"]
+    assert clip.score == 8
+    assert abs(clip.start - (lines[3].s - 0.25)) < 0.01
+
+
+def test_voice_command_ends_clip():
+    s = Settings(min_clip_seconds=10, max_clip_seconds=60)
+    lines = make_lines(speech(30), 0, 200)
+    trig = lines[10].e
+    clip = Clip(start=0, end=10, trigger_time=trig, reasons=["Sprachbefehl: „clip das“"])
+    apply_result(clip, {"start_line": 5, "end_line": 20, "score": 7, "title": "", "description": "",
+                        "hashtags": [], "reason": "", "is_highlight": True}, lines, s, 200)
+    assert clip.end <= trig + 6.5  # nicht bis Zeile 20 weiterlaufen
+
+
+def test_overlaps_resolved():
+    from clipforge.pipeline.clips import STATUS_REJECTED
+    from clipforge.pipeline.llm import resolve_overlaps
+
+    a = Clip(37.2, 68.5, 42, ["x"], score=8)
+    b = Clip(56.1, 80.1, 78, ["y"], score=8)
+    resolve_overlaps([a, b], 15)
+    assert a.end == 56.1 and a.status != STATUS_REJECTED
+    c = Clip(100, 130, 128, ["x"], score=5)
+    d = Clip(105, 135, 133, ["y"], score=9)
+    resolve_overlaps([c, d], 15)
+    assert c.status == STATUS_REJECTED and d.status != STATUS_REJECTED
+
+
 def test_not_highlight_caps_score():
     s = Settings()
     lines = make_lines(speech(30), 0, 200)

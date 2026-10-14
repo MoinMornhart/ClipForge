@@ -69,7 +69,7 @@ def measure_levels(src: Path, duration: float, work_dir: Path, on_progress: Call
     return levels
 
 
-def find_peaks(levels: list[float], above_db: float = 10.0, min_level_db: float = -22.0,
+def find_peaks(levels: list[float], above_db: float = 11.0, min_level_db: float = -22.0,
                min_len: float = 1.0, min_gap: float = 45.0, context: float = 180.0) -> list[LoudPeak]:
     if not levels:
         return []

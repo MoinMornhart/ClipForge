@@ -38,10 +38,13 @@ Deine Aufgaben:
 2. Wähle Start- und Endzeile so, dass der Clip ohne Vorwissen verständlich ist: Er beginnt dort, wo die \
 Situation sich aufbaut (nicht mitten im Satz und nicht unnötig früh), und endet kurz nach der Pointe bzw. \
 Reaktion. Den Sprachbefehl selbst („clip das“) lässt du am Ende weg, wenn danach nichts Wichtiges mehr kommt.
-3. Bewerte das Viralpotenzial von 1 bis 10 (1 = langweilig, 5 = solide, 8+ = sehr stark: überraschend, \
-lustig, emotional oder spektakulär, funktioniert auch ohne Ton dank Untertiteln). Sei streng.
-4. Schreibe einen kurzen, neugierig machenden Titel (max. 60 Zeichen, kein Clickbait-Gelaber), eine \
-Beschreibung (1–2 Sätze) und 3–8 passende Hashtags ohne Leerzeichen. Alles in der Sprache des Streams.
+3. Bewerte das Viralpotenzial von 1 bis 10. Sei streng und nutze die ganze Skala: Die meisten Stellen in \
+einem Stream sind 3–5. 1–2 = nichts passiert, 3–4 = normales Gespräch, 5–6 = ganz nett, 7 = gut, \
+8–9 = sehr stark (überraschend, lustig, emotional oder spektakulär, auch ohne Vorwissen), 10 = außergewöhnlich. \
+Viele Chat-Nachrichten oder Lautstärke allein machen noch keinen guten Clip – entscheidend ist, was passiert.
+4. Schreibe einen kurzen, neugierig machenden Titel (max. 60 Zeichen) über den INHALT des Moments. Nenne nie \
+den Auslöser (keine „Chat-Spitze“, keine Nachrichtenzahlen, kein „Clip“). Dazu eine Beschreibung (1–2 Sätze) \
+und 3–8 passende Hashtags als Liste, jeder ohne Leerzeichen. Alles in der Sprache des Streams.
 5. Begründe deine Bewertung in einem Satz.
 
 Das Transkript ist automatisch erstellt und kann Fehler enthalten. Schreibe Titel und Beschreibung trotzdem \
@@ -333,12 +336,55 @@ class Scorer:
         return clip
 
 
+def _int(v, default: int) -> int:
+    """Kleine Modelle liefern Zahlen gern als Text („8“, „8/10“, „L12“)."""
+    if isinstance(v, (int, float)):
+        return int(v)
+    m = re.search(r"-?\d+", str(v or ""))
+    return int(m.group(0)) if m else default
+
+
+def _hashtags(raw) -> list[str]:
+    """Liste oder Text („#gaming #fail“ / „gaming, fail“) → ['#gaming', '#fail']."""
+    if isinstance(raw, str):
+        raw = re.split(r"[\s,;]+", raw)
+    tags = []
+    for t in raw or []:
+        t = re.sub(r"\s+", "", str(t)).lstrip("#").strip(",.;")
+        if len(t) >= 2 and f"#{t}" not in tags:
+            tags.append(f"#{t}")
+    return tags[:10]
+
+
+def resolve_overlaps(clips: list[Clip], min_len: float) -> None:
+    """Überlappende Clips entzerren: der frühere endet, wo der spätere beginnt. Bleibt dann zu wenig übrig,
+    wird der schwächere verworfen (Grund wird vermerkt)."""
+    from clipforge.pipeline.clips import STATUS_REJECTED
+
+    live = sorted((c for c in clips if c.status != STATUS_REJECTED), key=lambda c: c.start)
+    for a, b in zip(live, live[1:]):
+        if a.status == STATUS_REJECTED or b.status == STATUS_REJECTED or a.end <= b.start:
+            continue
+        if b.start - a.start >= min_len:
+            a.end = round(b.start, 2)
+        else:
+            weaker = a if (a.score or 0) < (b.score or 0) else b
+            weaker.status = STATUS_REJECTED
+            weaker.ai_reason = (weaker.ai_reason + " " if weaker.ai_reason else "") + \
+                "(Automatisch verworfen: überschneidet sich mit einem stärkeren Clip.)"
+
+
 def apply_result(clip: Clip, r: dict, lines: list[Line], s: Settings, duration: float) -> None:
     """Überträgt die KI-Antwort auf den Clip und erzwingt die Längengrenzen."""
     n = len(lines)
-    a = min(max(int(r.get("start_line", 0)), 0), n - 1)
-    b = min(max(int(r.get("end_line", n - 1)), a), n - 1)
+    a = min(max(_int(r.get("start_line"), 0), 0), n - 1)
+    b = min(max(_int(r.get("end_line"), n - 1), a), n - 1)
     max_len, min_len = s.effective_max_seconds, s.min_clip_seconds
+    # Ein Sprachbefehl („clip das“) beendet den Moment: der Clip endet kurz danach, nicht Minuten später
+    if clip.reasons and all(x.startswith(("Sprachbefehl", "Schlüsselbegriff")) for x in clip.reasons):
+        limit = clip.trigger_time + 4.0
+        while b > a and lines[b].e > limit:
+            b -= 1
     # Zu lang: vorne kürzen, die Pointe am Ende bleibt
     while a < b and lines[b].e - lines[a].s > max_len:
         a += 1
@@ -356,11 +402,10 @@ def apply_result(clip: Clip, r: dict, lines: list[Line], s: Settings, duration: 
         start = max(0.0, end - min_len)
         end = min(duration, max(end, start + min_len))
     clip.start, clip.end = round(start, 2), round(end, 2)
-    clip.score = float(min(10, max(1, int(r.get("score", 1)))))
+    clip.score = float(min(10, max(1, _int(r.get("score"), 1))))
     clip.title = str(r.get("title", "")).strip()[:100]
     clip.description = str(r.get("description", "")).strip()
-    tags = [re.sub(r"\s+", "", str(t)).lstrip("#") for t in r.get("hashtags", [])]
-    clip.hashtags = [f"#{t}" for t in tags if t][:10]
+    clip.hashtags = _hashtags(r.get("hashtags", []))
     clip.ai_reason = str(r.get("reason", "")).strip()
     if not r.get("is_highlight", True):
         clip.score = min(clip.score, 3.0)

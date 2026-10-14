@@ -217,7 +217,17 @@ class ClipsPage(QWidget):
         self.player.setAudioOutput(self.audio)
         self.player.setVideoOutput(self.video)
         self.player.positionChanged.connect(self._pos)
-        rl.addWidget(self.video, 3)
+        # Standbild des Clipstarts, bis abgespielt wird (Video zeichnet Windows erst beim Abspielen)
+        from PySide6.QtWidgets import QStackedWidget
+
+        self.poster = QLabel()
+        self.poster.setAlignment(Qt.AlignCenter)
+        self.poster.setStyleSheet("background:#000;")
+        self.poster.setMinimumHeight(300)
+        self.view = QStackedWidget()
+        self.view.addWidget(self.poster)
+        self.view.addWidget(self.video)
+        rl.addWidget(self.view, 3)
         self.range = RangeSlider()
         self.range.changed.connect(self._range_changed)
         self.range.seek.connect(lambda t: self.player.setPosition(int(t * 1000)))
@@ -419,6 +429,8 @@ class ClipsPage(QWidget):
         self.title_edit.setText(c.title)
         self.desc_edit.setPlainText(c.description)
         self.tags_edit.setText(" ".join(c.hashtags))
+        self.title_edit.setCursorPosition(0)
+        self.tags_edit.setCursorPosition(0)
         self.reason.setText("; ".join(c.reasons) + (f"\nKI: {c.ai_reason}" if c.ai_reason else ""))
         idx = self.layout_box.findData(c.layout or self.s.default_layout)
         self.layout_box.setCurrentIndex(max(0, idx))
@@ -428,7 +440,28 @@ class ClipsPage(QWidget):
         self._show_transcript()
         self._loading = False
         self.player.setPosition(int(c.start * 1000))
-        self.player.pause()
+        self._show_still()
+
+    def _show_still(self):
+        """Standbild am Clipstart anzeigen, bis der Nutzer abspielt."""
+        c = self.cur
+        if not c or not self.proj:
+            return
+        if self.player.playbackState() == QMediaPlayer.PlayingState:
+            self.player.pause()
+        self.play_btn.setText("▶ Abspielen")
+        self.view.setCurrentWidget(self.poster)
+        fr = read_frames(self.proj.source.path, [c.start + 0.5], max_w=1280)
+        if fr:
+            pm = QPixmap.fromImage(bgr_to_qimage(fr[0][1]))
+            self._poster_pm = pm
+            self.poster.setPixmap(pm.scaled(self.poster.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if getattr(self, "_poster_pm", None):
+            self.poster.setPixmap(self._poster_pm.scaled(self.poster.size(), Qt.KeepAspectRatio,
+                                                         Qt.SmoothTransformation))
 
     def _show_transcript(self):
         c = self.cur
@@ -503,6 +536,7 @@ class ClipsPage(QWidget):
         else:
             if self.cur and not (self.cur.start <= self.player.position() / 1000 < self.cur.end):
                 self.player.setPosition(int(self.cur.start * 1000))
+            self.view.setCurrentWidget(self.video)
             self.player.play()
             self.play_btn.setText("⏸ Pause")
 

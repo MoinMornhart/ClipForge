@@ -21,7 +21,7 @@ from clipforge.pipeline.facecam import Facecam, detect_facecam
 from clipforge.pipeline.subtitles import SubtitleStyle
 from clipforge.pipeline.triggers import Hit
 from clipforge.pipeline.clips import STATUS_APPROVED, STATUS_EXPORTED, STATUS_REJECTED, Clip, candidates_from_hits
-from clipforge.pipeline.llm import CostEstimate, Scorer, estimate_cost
+from clipforge.pipeline.llm import CostEstimate, Scorer, estimate_cost, resolve_overlaps
 from clipforge.pipeline.project import Project
 from clipforge.pipeline.transcribe import ApiWhisper, LocalWhisper, transcribe_source
 from clipforge.pipeline.triggers import find_hits
@@ -208,6 +208,7 @@ class Pipeline:
             if u.calls:
                 proj.add_cost("ki", self.s.llm_provider, self.s.llm_model, scorer.cost_usd(),
                               u.input_tokens, u.output_tokens, calls=u.calls)
+        resolve_overlaps(clips, self.s.min_clip_seconds)
         clips.sort(key=lambda c: -(c.score or 0))
         proj.save_clips(clips)
         cost = scorer.cost_usd()
