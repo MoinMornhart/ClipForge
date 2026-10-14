@@ -46,6 +46,27 @@ def text_between(words: list[Word], start: float, end: float) -> str:
     return " ".join(w.w for w in words if start <= w.s < end)
 
 
+def align_edit(original: list[Word], new_text: str) -> list[list]:
+    """Korrigierten Text wieder Zeitstempeln zuordnen.
+
+    Gleiche Wortzahl: Wort für Wort ersetzen (Zeiten bleiben exakt).
+    Sonst: neue Wörter nach Buchstabenzahl über die ursprüngliche Zeitspanne verteilen.
+    """
+    tokens = new_text.split()
+    if not original or not tokens:
+        return []
+    if len(tokens) == len(original):
+        return [[t, w.s, w.e] for t, w in zip(tokens, original)]
+    t0, t1 = original[0].s, original[-1].e
+    total = sum(len(t) + 1 for t in tokens)
+    out, cur = [], t0
+    for t in tokens:
+        d = (t1 - t0) * (len(t) + 1) / total
+        out.append([t, round(cur, 3), round(cur + d * 0.9, 3)])
+        cur += d
+    return out
+
+
 def candidates_from_hits(hits: list[Hit], duration: float, s: Settings) -> list[Clip]:
     """Einfache Grenzen: ein Sprachbefehl bezieht sich auf das, was VORHER passiert ist.
     Die KI-Bewertung (Meilenstein 2) verfeinert die Grenzen danach inhaltlich."""

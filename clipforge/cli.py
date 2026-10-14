@@ -139,6 +139,25 @@ def cmd_keyword(args) -> int:
     return 0
 
 
+def cmd_costs(_args) -> int:
+    from clipforge.pipeline.project import Project
+
+    rows = [p for p in Project.all() if p.source]
+    if not rows:
+        print("Noch keine VODs analysiert.")
+        return 0
+    print(f"{'Datum':<11} {'Streamer':<16} {'Kosten':>10}  Details")
+    for p in rows:
+        src = p.source
+        c = p.cost_summary
+        usd = f"{c['usd']:.2f} $" + ("" if c["complete"] else "+?")
+        detail = p.cost_text().split("(", 1)[-1].rstrip(")") if c["items"] else "nur lokal"
+        print(f"{src.date or '–':<11} {(src.streamer or 'Datei')[:16]:<16} {usd:>10}  {detail}  · {src.title[:40]}")
+    total, n = Project.total_cost_all()
+    print(f"\nGesamt: {total:.2f} $ für {n} VOD(s) mit API-Nutzung")
+    return 0
+
+
 def cmd_models(args) -> int:
     from clipforge.pipeline.llm import list_models
 
@@ -178,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     k.add_argument("provider", nargs="?")
     m = sub.add_parser("models", help="verfügbare Modelle eines Anbieters anzeigen")
     m.add_argument("provider", nargs="?")
+    sub.add_parser("costs", help="tatsächliche API-Kosten pro VOD anzeigen")
     kw = sub.add_parser("keyword", help="eigene Schlüsselbegriffe verwalten")
     kw.add_argument("action", choices=["list", "add", "delete"])
     kw.add_argument("phrase", nargs="?")
@@ -196,6 +216,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_models(args)
         if args.cmd == "keyword":
             return cmd_keyword(args)
+        if args.cmd == "costs":
+            return cmd_costs(args)
     except ClipForgeError as e:
         print(f"Fehler: {e}", file=sys.stderr)
         return 1
@@ -221,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"      KI: {c.ai_reason}")
             if c.hashtags:
                 print(f"      {' '.join(c.hashtags)}")
+        print(f"\nTatsächliche API-Kosten für dieses VOD: {proj.cost_text()}")
         if args.cmd in ("export", "run") and clips:
             paths = pipe.export(proj, only_approved=args.approved)
             for p in paths:

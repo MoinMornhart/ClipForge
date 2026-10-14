@@ -89,6 +89,7 @@ class ApiWhisper:
     audio_ext = ".mp3"  # kleiner Upload; 10 min ≈ 5 MB (Grenze bei OpenAI: 25 MB)
 
     def __init__(self, provider_name: str, base_url: str, api_key: str, model: str):
+        self.billed_seconds = 0.0  # abgerechnete Audiodauer (für die tatsächlichen Kosten)
         self.provider_name = provider_name
         self.base_url = base_url
         self.api_key = api_key
@@ -167,6 +168,8 @@ def transcribe_source(
             extract_audio(src, wav, a_start, a_len, cancel, ffmpeg_path)
             try:
                 raw = backend.transcribe(wav, language)
+                if hasattr(backend, "billed_seconds"):
+                    backend.billed_seconds += a_len
             finally:
                 wav.unlink(missing_ok=True)
             # Zeitstempel auf das VOD beziehen und nur Wörter behalten, die in diesem Abschnitt beginnen

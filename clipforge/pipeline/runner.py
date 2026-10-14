@@ -13,7 +13,7 @@ from typing import Callable
 from clipforge.core import ffmpeg, secrets
 from clipforge.core.errors import Cancelled, ClipForgeError
 from clipforge.core.log import get_logger
-from clipforge.core.providers import STT_PROVIDERS
+from clipforge.core.providers import STT_PRICES_PER_MIN, STT_PROVIDERS
 from clipforge.core.settings import Settings
 from clipforge.pipeline import audio, chat, importer, render
 from clipforge.pipeline.chat import load_chat
@@ -88,12 +88,24 @@ class Pipeline:
             return
         src = proj.source
         self.progress("transcribe", 0.0, "Lade Sprachmodell …")
-        words = transcribe_source(
-            src.path, proj.media["duration"], proj.dir, self.backend(), self.s.language or None,
-            chunk_seconds=self.s.chunk_minutes * 60,
-            on_progress=lambda f, m: self.progress("transcribe", f, m), cancel=self.cancel,
-            ffmpeg_path=self.s.ffmpeg_path,
-        )
+        backend = self.backend()
+        try:
+            words = transcribe_source(
+                src.path, proj.media["duration"], proj.dir, backend, self.s.language or None,
+                chunk_seconds=self.s.chunk_minutes * 60,
+                on_progress=lambda f, m: self.progress("transcribe", f, m), cancel=self.cancel,
+                ffmpeg_path=self.s.ffmpeg_path,
+            )
+        finally:
+            # tatsächlich abgerechnete Audiominuten festhalten, auch bei Abbruch
+            secs = getattr(backend, "billed_seconds", 0.0)
+            if secs:
+                prov = self.s.transcription_backend
+                model = self.s.stt_api_model or STT_PROVIDERS[prov].default_model
+                price = STT_PRICES_PER_MIN.get(f"{prov}:{model}")
+                proj.add_cost("transkription", prov, model, None if price is None else price * secs / 60,
+                              minutes=secs / 60, calls=1)
+                backend.billed_seconds = 0.0
         proj.save_words(words)
         proj.mark("transcribe")
 
@@ -181,14 +193,21 @@ class Pipeline:
             return clips
         words = proj.load_words()
         duration = proj.media["duration"]
-        for n, clip in enumerate(todo, 1):
-            if self.cancel.is_set():
-                raise Cancelled()
-            self.progress("score", (n - 1) / len(todo), f"KI bewertet Clip {n}/{len(todo)}")
-            scorer.score_clip(clip, words, duration)
-            if self.s.min_score and clip.score is not None and clip.score < self.s.min_score:
-                clip.status = STATUS_REJECTED
-            proj.save_clips(clips)  # nach jedem Clip sichern: Abbruch verliert nichts
+        try:
+            for n, clip in enumerate(todo, 1):
+                if self.cancel.is_set():
+                    raise Cancelled()
+                self.progress("score", (n - 1) / len(todo), f"KI bewertet Clip {n}/{len(todo)}")
+                scorer.score_clip(clip, words, duration)
+                if self.s.min_score and clip.score is not None and clip.score < self.s.min_score:
+                    clip.status = STATUS_REJECTED
+                proj.save_clips(clips)  # nach jedem Clip sichern: Abbruch verliert nichts
+        finally:
+            # tatsächlich verbrauchte Tokens festhalten, auch bei Abbruch oder Fehler
+            u = scorer.usage
+            if u.calls:
+                proj.add_cost("ki", self.s.llm_provider, self.s.llm_model, scorer.cost_usd(),
+                              u.input_tokens, u.output_tokens, calls=u.calls)
         clips.sort(key=lambda c: -(c.score or 0))
         proj.save_clips(clips)
         cost = scorer.cost_usd()

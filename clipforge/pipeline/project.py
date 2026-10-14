@@ -86,6 +86,58 @@ class Project:
         self.state["media"] = media
         self.save()
 
+    # Tatsächliche API-Kosten (über alle Läufe dieses VODs aufsummiert)
+    def add_cost(self, kind: str, provider: str, model: str, usd: float | None, input_tokens: int = 0,
+                 output_tokens: int = 0, minutes: float = 0.0, calls: int = 0) -> None:
+        """kind: "ki" (Bewertung) oder "transkription". usd=None, wenn der Preis des Modells unbekannt ist."""
+        costs = self.state.setdefault("costs", {"items": []})
+        costs["items"].append({
+            "kind": kind, "provider": provider, "model": model, "usd": None if usd is None else round(usd, 5),
+            "input_tokens": input_tokens, "output_tokens": output_tokens, "minutes": round(minutes, 2),
+            "calls": calls, "at": dt.datetime.now().isoformat(timespec="seconds"),
+        })
+        self.save()
+
+    @property
+    def cost_summary(self) -> dict:
+        items = self.state.get("costs", {}).get("items", [])
+        known = [i["usd"] for i in items if i["usd"] is not None]
+        return {
+            "usd": round(sum(known), 4),
+            "complete": all(i["usd"] is not None for i in items),  # False: ein Modell ohne bekannten Preis
+            "input_tokens": sum(i["input_tokens"] for i in items),
+            "output_tokens": sum(i["output_tokens"] for i in items),
+            "minutes": round(sum(i["minutes"] for i in items), 1),
+            "by_kind": {k: round(sum(i["usd"] or 0 for i in items if i["kind"] == k), 4)
+                        for k in ("transkription", "ki")},
+            "items": items,
+        }
+
+    def cost_text(self) -> str:
+        c = self.cost_summary
+        if not c["items"]:
+            return "0,00 $ (nur lokal)"
+        txt = f"{c['usd']:.2f} $".replace(".", ",")
+        if not c["complete"]:
+            txt += " + unbekannt"
+        parts = []
+        if c["minutes"]:
+            parts.append(f"{c['minutes']:.0f} Audiominuten")
+        if c["input_tokens"] or c["output_tokens"]:
+            parts.append(f"{(c['input_tokens'] + c['output_tokens']) / 1000:.1f}k Tokens")
+        return txt + (f" ({', '.join(parts)})" if parts else "")
+
+    @staticmethod
+    def total_cost_all() -> tuple[float, int]:
+        """Summe über alle Projekte: (US-$, Anzahl VODs mit Kosten)."""
+        total, n = 0.0, 0
+        for p in Project.all():
+            c = p.cost_summary
+            if c["items"]:
+                total += c["usd"]
+                n += 1
+        return round(total, 4), n
+
     @property
     def offset(self) -> float:
         """Start des geladenen Ausschnitts im Original-VOD (0 bei vollständigen VODs)."""
