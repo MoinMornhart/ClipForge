@@ -8,7 +8,7 @@
   <img alt="NVIDIA" src="https://img.shields.io/badge/GPU-CUDA%20%2B%20NVENC-76B900?logo=nvidia&logoColor=white">
   <img alt="Twitch" src="https://img.shields.io/badge/Twitch-✓-9146FF?logo=twitch&logoColor=white">
   <img alt="Kick" src="https://img.shields.io/badge/Kick-✓-53FC18?logo=kick&logoColor=black">
-  <img alt="Tests" src="https://img.shields.io/badge/Tests-35%20gr%C3%BCn-4cc98a">
+  <img alt="Tests" src="https://img.shields.io/badge/Tests-42%20gr%C3%BCn-4cc98a">
   <img alt="Lizenz" src="https://img.shields.io/badge/Lizenz-MIT-f2a93b">
 </p>
 
@@ -354,7 +354,7 @@ clipforge/
 │   └── runner     Ablaufsteuerung für Kommandozeile und Oberfläche
 ├── ui/            PySide6-Oberfläche
 └── cli.py         Kommandozeile
-tests/             35 Tests (pytest)
+tests/             42 Tests (pytest)
 ```
 
 **Technik:** Python 3.11, FFmpeg, yt-dlp, curl_cffi, faster-whisper (CTranslate2/CUDA), MediaPipe, OpenCV, rapidfuzz, Anthropic SDK, OpenAI SDK, PySide6.

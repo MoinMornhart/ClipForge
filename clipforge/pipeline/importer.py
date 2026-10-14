@@ -157,6 +157,37 @@ def hls_section(playlist_url: str, headers: dict, start: float, end: float, out:
     return pick[0][0]
 
 
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+       "Chrome/131.0 Safari/537.36")
+
+
+def _download_kick(url: str, target: Path, on_progress, cancel, max_height: int,
+                   section: tuple[float, float] | None) -> Source:
+    """Kick über den eigenen Weg: Videoseite → HLS-Stream → nur die nötigen Segmente.
+    Funktioniert auch mit dem neuen Kick-Link-Format, das yt-dlp nicht kennt."""
+    from clipforge.pipeline import kick
+
+    if on_progress:
+        on_progress(0.0, "Suche das Kick-VOD …")
+    v = kick.resolve(url)
+    headers = {"User-Agent": _UA, "Referer": "https://kick.com/", "Origin": "https://kick.com"}
+    master = _fetch(v.m3u8, headers).decode("utf-8", "replace")
+    variant = kick.best_variant(v.m3u8, master, max_height) if "#EXT-X-STREAM-INF" in master else v.m3u8
+    segs, _, _ = parse_m3u8(_fetch(variant, headers).decode("utf-8", "replace"), variant)
+    total = segs[-1][0] + segs[-1][1] if segs else v.duration
+    start, end = section if section else (0.0, total)
+    tag = f"_{int(start)}-{int(end)}" if section else ""
+    name = re.sub(r"[^\w.-]+", "_", f"{v.streamer or v.slug}_{(v.date or '').replace('-', '')}_{v.vod_id[:8]}{tag}")
+    path = target / f"{name}.mp4"
+    if path.exists():
+        offset = next((s[0] for s in segs if s[0] + s[1] > start), start) if section else 0.0
+    else:
+        offset = hls_section(variant, headers, start, end, path, on_progress, cancel)
+    log.info("Kick-VOD geladen: %s (%s)", path, v.title)
+    return Source(path=path, title=v.title or path.stem, streamer=v.streamer or v.slug, date=v.date, url=url,
+                  vod_id=v.vod_id, platform="Kick", offset=offset if section else 0.0)
+
+
 def download(
     url: str,
     target_dir: str | Path,
@@ -171,6 +202,9 @@ def download(
     section=(Start, Ende) in Sekunden lädt nur einen Ausschnitt.
     """
     platform = platform_of(url)
+    if platform == "Kick" and "/videos/" in url:
+        Path(target_dir).mkdir(parents=True, exist_ok=True)
+        return _download_kick(url, Path(target_dir), on_progress, cancel, max_height, section)
     try:
         import yt_dlp
     except ImportError as e:

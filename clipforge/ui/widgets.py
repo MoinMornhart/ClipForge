@@ -169,9 +169,14 @@ class RangeSlider(QWidget):
 
 
 class RectSelector(QLabel):
-    """Zeigt ein Vorschaubild; mit der Maus ein Rechteck aufziehen (Facecam-Bereich)."""
+    """Zeigt ein Vorschaubild; mit der Maus Rechtecke aufziehen.
 
-    selected = Signal(list)  # normiert [x, y, w, h]
+    mode "cam": Facecam-Rahmen (orange), mode "subject": Objekt in der Cam, z. B. ein Bär (grün).
+    """
+
+    selected = Signal(str, list)  # Modus, normiert [x, y, w, h]
+    STYLES = {"cam": ("Facecam", theme.ACCENT, (242, 169, 59, 40)), "subject": ("Objekt", theme.GOOD, (76, 201, 138, 40)),
+              "hand": ("Handcam", "#4aa3ff", (74, 163, 255, 40))}
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -180,6 +185,9 @@ class RectSelector(QLabel):
         self.setStyleSheet(f"background: #000; border-radius: 8px;")
         self._img: QImage | None = None
         self.rect_norm: list[float] | None = None
+        self.subject_norm: list[float] | None = None
+        self.hand_norm: list[float] | None = None
+        self.mode = "cam"
         self._origin = None
         self._cur = None
 
@@ -202,21 +210,24 @@ class RectSelector(QLabel):
             return
         t = self._target()
         p.drawImage(t, self._img)
-        r = None
-        if self._origin and self._cur:
-            r = QRectF(self._origin, self._cur).normalized()
-        elif self.rect_norm:
-            x, y, w, h = self.rect_norm
-            r = QRectF(t.x() + x * t.width(), t.y() + y * t.height(), w * t.width(), h * t.height())
-        if r:
-            p.setPen(QPen(QColor(theme.ACCENT), 3))
-            p.setBrush(QColor(242, 169, 59, 40))
+        for mode, norm in (("cam", self.rect_norm), ("hand", self.hand_norm), ("subject", self.subject_norm)):
+            r = None
+            if self._origin and self._cur and mode == self.mode:
+                r = QRectF(self._origin, self._cur).normalized()
+            elif norm:
+                x, y, w, h = norm
+                r = QRectF(t.x() + x * t.width(), t.y() + y * t.height(), w * t.width(), h * t.height())
+            if not r:
+                continue
+            label, color, fill = self.STYLES[mode]
+            p.setPen(QPen(QColor(color), 3))
+            p.setBrush(QColor(*fill))
             p.drawRect(r)
             p.setPen(QColor("#111"))
-            p.setBrush(QColor(theme.ACCENT))
-            tag = QRectF(r.x(), r.y() - 22, 82, 20)
+            p.setBrush(QColor(color))
+            tag = QRectF(r.x(), max(t.y(), r.y() - 22), 82, 20)
             p.drawRect(tag)
-            p.drawText(tag, Qt.AlignCenter, "Facecam")
+            p.drawText(tag, Qt.AlignCenter, label)
 
     def mousePressEvent(self, e):
         self._origin = e.position()
@@ -234,9 +245,15 @@ class RectSelector(QLabel):
         r = QRectF(self._origin, e.position()).normalized().intersected(QRectF(t))
         self._origin = self._cur = None
         if r.width() > 10 and r.height() > 10 and t.width() > 0:
-            self.rect_norm = [round((r.x() - t.x()) / t.width(), 4), round((r.y() - t.y()) / t.height(), 4),
-                              round(r.width() / t.width(), 4), round(r.height() / t.height(), 4)]
-            self.selected.emit(self.rect_norm)
+            norm = [round((r.x() - t.x()) / t.width(), 4), round((r.y() - t.y()) / t.height(), 4),
+                    round(r.width() / t.width(), 4), round(r.height() / t.height(), 4)]
+            if self.mode == "subject":
+                self.subject_norm = norm
+            elif self.mode == "hand":
+                self.hand_norm = norm
+            else:
+                self.rect_norm = norm
+            self.selected.emit(self.mode, norm)
         self.update()
 
 

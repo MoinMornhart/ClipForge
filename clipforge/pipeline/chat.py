@@ -115,23 +115,19 @@ def kick_video_uuid(url: str) -> str | None:
     return m.group(1) if m else None
 
 
-def fetch_kick(uuid: str, start: float, end: float, on_progress=None, cancel=None,
+def fetch_kick(url: str, start: float, end: float, on_progress=None, cancel=None,
                step_empty: float = 5.0, workers: int = 16) -> list[ChatMessage]:
     """Die Kick-API liefert pro Abfrage nur wenige Sekunden Chat. Darum wird die Zeitachse in
-    Abschnitte geteilt, die parallel geladen werden."""
+    Abschnitte geteilt, die parallel geladen werden. Kanal-ID und Streamstart kommen aus kick.resolve
+    (funktioniert auch mit dem neuen Link-Format)."""
     from concurrent.futures import ThreadPoolExecutor
 
-    s = _session()
-    try:
-        v = s.get(f"https://kick.com/api/v1/video/{uuid}", timeout=30).json()
-        ls = v["livestream"]
-        channel_id = ls["channel_id"]
-        t0 = dt.datetime.fromisoformat(ls["start_time"].replace(" ", "T"))
-        if t0.tzinfo is None:
-            t0 = t0.replace(tzinfo=dt.timezone.utc)
-    except Exception as e:
-        raise ClipForgeError("Der Kick-Chat konnte nicht geladen werden.",
-                             "Die Analyse läuft ohne Chat weiter.", str(e)) from e
+    from clipforge.pipeline import kick
+
+    v = kick.resolve(url)
+    channel_id, t0 = v.channel_id, v.start_time
+    if not channel_id or not t0:
+        raise ClipForgeError("Für dieses Kick-VOD liefert Kick keine Chat-Daten.", "Die Analyse läuft ohne Chat weiter.")
     lock = threading.Lock()
     found: dict[str, ChatMessage] = {}
     done_secs = [0.0]
@@ -193,7 +189,7 @@ def load_chat(url: str, duration: float, work_dir: Path, offset: float = 0.0,
     if vid := twitch_vod_id(url):
         msgs = fetch_twitch(vid, start, end, on_progress, cancel)
     elif uuid := kick_video_uuid(url):
-        msgs = fetch_kick(uuid, start, end, on_progress, cancel)
+        msgs = fetch_kick(url, start, end, on_progress, cancel)
     else:
         return None
     msgs = [ChatMessage(round(m.t - offset, 2), m.text, m.user) for m in msgs]

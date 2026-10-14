@@ -88,17 +88,43 @@ class FacecamDialog(QDialog):
         self.resize(1000, 680)
         self.pipe, self.proj = pipe, proj
         lay = QVBoxLayout(self)
-        info = QLabel("Ziehe ein Rechteck um die Facecam. Wird als Profil für diesen Streamer gespeichert "
-                      "und bei künftigen VODs automatisch benutzt.")
+        info = QLabel("1. Ziehe ein Rechteck um die Facecam (orange).  2. Optional: Markiere das Objekt in der Cam "
+                      "(grün), z. B. dein Maskottchen. ClipForge erkennt es dann in jedem Clip wieder, folgt ihm und "
+                      "zoomt mit, wenn es größer oder kleiner wird – und findet die Cam auch, wenn du sie verschiebst. "
+                      "3. Optional: Handcam-Rahmen (blau), falls du eine Kamera auf deine Hände hast. "
+                      "Wird als Profil für diesen Streamer gespeichert.")
         info.setWordWrap(True)
         info.setObjectName("muted")
         lay.addWidget(info)
+        modes = QHBoxLayout()
+        self.mode_cam = QPushButton("① Facecam-Rahmen ziehen")
+        self.mode_obj = QPushButton("② Objekt markieren (z. B. Bär)")
+        self.mode_hand = QPushButton("③ Handcam-Rahmen ziehen")
+        for b, m in ((self.mode_cam, "cam"), (self.mode_obj, "subject"), (self.mode_hand, "hand")):
+            b.setCheckable(True)
+            b.clicked.connect(lambda _=False, mm=m: self._set_mode(mm))
+            modes.addWidget(b)
+        clear_obj = QPushButton("Objekt entfernen")
+        clear_obj.clicked.connect(self._clear_subject)
+        modes.addWidget(clear_obj)
+        clear_hand = QPushButton("Handcam entfernen")
+        clear_hand.clicked.connect(self._clear_hand)
+        modes.addWidget(clear_hand)
+        modes.addStretch(1)
+        lay.addLayout(modes)
         self.sel = RectSelector()
         lay.addWidget(self.sel, 1)
+        self.at = at
         frames = read_frames(proj.source.path, [at])
         cur = Facecam.from_dict(proj.state.get("facecam"))
+        self.cur = cur
         if frames:
             self.sel.set_image(bgr_to_qimage(frames[0][1]), cur.cam if cur and cur.mode == "overlay" else None)
+        if cur and cur.subject and cur.subject_file:
+            self.sel.subject_norm = cur.subject
+        if cur and cur.handcam:
+            self.sel.hand_norm = cur.handcam
+        self._set_mode("cam")
         self.state = QLabel(self._describe(cur))
         self.state.setObjectName("muted")
         lay.addWidget(self.state)
@@ -127,7 +153,8 @@ class FacecamDialog(QDialog):
             return "Noch keine Facecam bestimmt."
         src = {"auto": "automatisch erkannt", "profil": "aus Streamer-Profil", "manuell": "von Hand festgelegt"}
         return {"overlay": "Facecam-Fenster", "fullcam": "Nur-Kamera-Stream", "none": "Keine Facecam"}[f.mode] + \
-            f" · {src.get(f.source, f.source)} · Sicherheit {f.confidence:.0%}"
+            f" · {src.get(f.source, f.source)} · Sicherheit {f.confidence:.0%}" + \
+            (" · Objekt markiert: wird verfolgt und gezoomt" if f.subject and f.subject_file else "") +             (" · Handcam " + ("erkannt" if f.hand_source == "auto" else "festgelegt") if f.handcam else "")
 
     def _auto(self):
         self.state.setText("Erkenne Facecam …")
@@ -153,8 +180,30 @@ class FacecamDialog(QDialog):
         self._none_chosen = True
         self.sel.update()
 
+    def _set_mode(self, mode: str):
+        self.sel.mode = mode
+        self.mode_cam.setChecked(mode == "cam")
+        self.mode_obj.setChecked(mode == "subject")
+        self.mode_hand.setChecked(mode == "hand")
+
+    def _clear_hand(self):
+        self.sel.hand_norm = None
+        self.sel.update()
+
+    def _clear_subject(self):
+        self.sel.subject_norm = None
+        self.sel.update()
+
     def _accept(self):
-        self.pipe.set_facecam(self.proj, self.sel.rect_norm, save_profile=self.profile.isChecked())
+        subj = self.sel.subject_norm
+        keep = self.cur.subject_file if (self.cur and subj and subj == self.cur.subject) else None
+        try:
+            self.pipe.set_facecam(self.proj, self.sel.rect_norm, save_profile=self.profile.isChecked(),
+                                  subject_norm=subj, at=self.at, subject_file=keep,
+                                  handcam_norm=self.sel.hand_norm)
+        except Exception as e:
+            QMessageBox.warning(self, "Facecam", str(e))
+            return
         self.accept()
 
 

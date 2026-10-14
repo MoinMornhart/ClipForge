@@ -87,15 +87,18 @@ def plan(job: RenderJob, media: dict, work: Path) -> tuple[str, str]:
     cam_info = job.facecam
     has_cam = bool(cam_info and cam_info.mode == "overlay" and cam_info.cam)
     fullcam = bool(cam_info and cam_info.mode == "fullcam")
-    layout = layouts.resolve_layout(job.layout, has_cam, fullcam)
+    has_hand = bool(cam_info and cam_info.handcam)
+    layout = layouts.resolve_layout(job.layout, has_cam, fullcam, has_hand)
     li = layouts.LayoutInput(sw, sh, job.fps)
     clip = job.clip
     if has_cam:
         li.cam = fc.Rect.from_norm(cam_info.cam, sw, sh)
     if cam_info and cam_info.face:
         li.face = fc.Rect.from_norm(cam_info.face, sw, sh)
+    if has_hand:
+        li.hand = fc.Rect.from_norm(cam_info.handcam, sw, sh)
     content = cam_info.content if cam_info else None
-    if job.smart_crop and layout in ("crop", "stack", "corner", "blur"):
+    if job.smart_crop and layout in ("crop", "stack", "corner", "blur", "hand", "face_hand"):
         try:
             content = fc.clip_letterbox(job.src, clip.start, clip.end) or content
         except Exception as e:
@@ -105,20 +108,45 @@ def plan(job: RenderJob, media: dict, work: Path) -> tuple[str, str]:
         li.content_h = int((content[1] - content[0]) * sh)
     ch = li.content_h or sh
 
-    if layout in ("crop", "stack", "corner") and job.smart_crop:
-        out_h = H - li.stack_top if layout == "stack" else H
+    if layout in ("crop", "stack", "corner", "hand", "face_hand") and job.smart_crop:
+        out_h = {"stack": H - li.stack_top, "hand": H - li.stack_top,
+                 "face_hand": H - sum(li.face_hand_rows)}.get(layout, H)
         gw = layouts.gameplay_width(ch, W, out_h)
         try:
-            li.gameplay_x = fc.smart_crop_x(job.src, clip.start, clip.end, gw, sw, sh, exclude=li.cam)
+            li.gameplay_x = fc.smart_crop_x(job.src, clip.start, clip.end, gw, sw, sh,
+                                            exclude=[r for r in (li.cam, li.hand) if r is not None])
         except Exception as e:  # Bildanalyse ist Kür: im Zweifel mittig
             log.warning("Gameplay-Ausschnitt nicht bestimmbar, nehme Mitte: %s", e)
+
+    # markiertes Objekt (z. B. Bär): ihm folgen und mitzoomen statt einem Gesicht nachzuführen
+    finder = None
+    if job.track_face and cam_info and cam_info.subject_file and Path(cam_info.subject_file).exists():
+        try:
+            finder = fc.SubjectFinder.from_file(cam_info.subject_file)
+        except Exception as e:
+            log.warning("Markiertes Objekt nicht ladbar: %s", e)
 
     if layout in ("stack", "cam") and (has_cam or fullcam):
         region = li.cam if has_cam else fc.Rect(0, 0, sw, sh)
         aspect = W / li.stack_top if layout == "stack" else W / H
         if layout == "cam" and has_cam:
-            aspect = None  # Facecam-Fenster wird als Ganzes gezeigt
-        if aspect:
+            # ohne Objekt: Facecam-Fenster als Ganzes; mit Objekt: im Seitenverhältnis des Fensters mitzoomen
+            aspect = region.w / region.h if finder else None
+        if aspect and finder:
+            ww, wh = layouts.cam_window_size(region, aspect)
+            li.cam_window = (ww, wh)
+            li.cam_xy = (int(region.x), int(region.y))
+            try:
+                tr = fc.track_subject(job.src, clip.start, clip.end, finder, region, aspect)
+                script = fc.sendcmd_script(tr, "cam")
+                if script:
+                    (work / "track.txt").write_text(script, encoding="utf-8")
+                    li.tracked = True
+                    li.cam_window = (layouts._even(tr.ws[0]), layouts._even(tr.hs[0]))
+                    li.cam_xy = (int(tr.xs[0]), int(tr.ys[0]))
+            except Exception as e:
+                log.warning("Objekt-Verfolgung nicht möglich, nutze festen Ausschnitt: %s", e)
+        elif aspect:
             ww, wh = layouts.cam_window_size(region, aspect)
             li.cam_window = (ww, wh)
             face = li.face or region

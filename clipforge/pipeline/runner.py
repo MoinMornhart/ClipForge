@@ -244,6 +244,7 @@ class Pipeline:
         prof = Facecam.from_dict(self.s.facecam_profiles.get(src.streamer)) if src and src.streamer else None
         if prof and not redetect:
             prof.source = "profil"
+            prof = self._relocate_by_subject(proj, prof)
             proj.state["facecam"] = prof.to_dict()
             proj.save()
             return prof
@@ -263,11 +264,56 @@ class Pipeline:
         self.progress("facecam", 1.0, f"{txt} ({found.frames_with_face}/{found.frames_total} Bilder)")
         return found
 
-    def set_facecam(self, proj: Project, cam_norm: list[float] | None, save_profile: bool = True) -> Facecam:
-        """Facecam von Hand festlegen (normiert x,y,b,h) und als Profil des Streamers speichern."""
+    def _relocate_by_subject(self, proj: Project, fcm: Facecam) -> Facecam:
+        """Hat das Profil ein markiertes Objekt, wird es im neuen VOD gesucht. Sitzt es woanders
+        (Cam-Fenster verschoben), wird der Cam-Rahmen mitverschoben."""
+        if not (fcm.subject and fcm.subject_file and Path(fcm.subject_file).exists()):
+            return fcm
+        from clipforge.pipeline.facecam import Rect, SubjectFinder, locate_subject
+
+        self.progress("facecam", 0.0, "Suche markiertes Objekt …")
+        try:
+            finder = SubjectFinder.from_file(fcm.subject_file)
+            W, H = proj.media["width"], proj.media["height"]
+            found = locate_subject(proj.source.path, proj.media["duration"], finder) if finder else None
+        except Exception as e:
+            log.warning("Objektsuche fehlgeschlagen: %s", e)
+            return fcm
+        if not found:
+            self.progress("facecam", 1.0, "Markiertes Objekt nicht gefunden – nutze gespeicherten Rahmen")
+            return fcm
+        old = Rect.from_norm(fcm.subject, W, H)
+        dx, dy = found.cx - old.cx, found.cy - old.cy
+        cam = Rect.from_norm(fcm.cam, W, H) if fcm.cam else None
+        # Der Bär bewegt sich auch innerhalb der Cam – verschoben wird nur, wenn er außerhalb des Rahmens sitzt
+        inside = cam and (cam.x - 0.05 * cam.w <= found.cx <= cam.x + 1.05 * cam.w
+                          and cam.y - 0.05 * cam.h <= found.cy <= cam.y + 1.05 * cam.h)
+        if cam and fcm.mode == "overlay" and not inside:
+            fcm.cam = Rect(cam.x + dx, cam.y + dy, cam.w, cam.h).clamp(W, H).norm(W, H)
+            self.progress("facecam", 1.0, "Cam-Fenster verschoben – über das markierte Objekt wiedergefunden")
+        else:
+            self.progress("facecam", 1.0, "Markiertes Objekt gefunden")
+        return fcm
+
+    def set_facecam(self, proj: Project, cam_norm: list[float] | None, save_profile: bool = True,
+                    subject_norm: list[float] | None = None, at: float | None = None,
+                    subject_file: str | None = None, handcam_norm: list[float] | None = None) -> Facecam:
+        """Facecam von Hand festlegen (normiert x,y,b,h) und als Profil des Streamers speichern.
+
+        subject_norm: optional markiertes Objekt (z. B. Bär); sein Bildausschnitt bei Sekunde at wird
+        gespeichert, damit ClipForge es in jedem Clip wiederfindet, ihm folgt und mitzoomt."""
         cur = Facecam.from_dict(proj.state.get("facecam"))
-        fcm = Facecam("overlay" if cam_norm else "none", cam=cam_norm, face=cur.face if cur else None,
-                      confidence=1.0, source="manuell")
+        fcm = Facecam("overlay" if cam_norm else ("fullcam" if subject_norm else "none"),
+                      cam=cam_norm or ([0, 0, 1, 1] if subject_norm else None),
+                      face=cur.face if cur else None, confidence=1.0, source="manuell",
+                      content=cur.content if cur else None,
+                      handcam=handcam_norm, hand_source="manuell" if handcam_norm else "")
+        if subject_norm:
+            # unverändertes Objekt aus dem Profil behalten, neu markiertes aus dem aktuellen Bild ausschneiden
+            fcm.subject = subject_norm
+            fcm.subject_file = (subject_file if subject_file and Path(subject_file).exists()
+                                else self._save_subject(proj, subject_norm, at or 0.0))
+        proj.state["facecam"] = fcm.to_dict()
         proj.state["facecam"] = fcm.to_dict()
         proj.save()
         src = proj.source
@@ -275,6 +321,28 @@ class Pipeline:
             self.s.facecam_profiles[src.streamer] = {**fcm.to_dict(), "source": "profil"}
             self.s.save()
         return fcm
+
+    def _save_subject(self, proj: Project, subject_norm: list[float], at: float) -> str:
+        import hashlib
+
+        import cv2
+
+        from clipforge.core.paths import sub
+        from clipforge.pipeline.facecam import Rect, read_frames
+
+        frames = read_frames(proj.source.path, [at])
+        if not frames:
+            raise ClipForgeError("Das Vorschaubild konnte nicht gelesen werden.", "Wähle eine andere Stelle im Clip.")
+        f = frames[0][1]
+        H, W = f.shape[:2]
+        r = Rect.from_norm(subject_norm, W, H).clamp(W, H)
+        crop = f[int(r.y):int(r.y + r.h), int(r.x):int(r.x + r.w)]
+        if crop.size == 0 or min(crop.shape[:2]) < 16:
+            raise ClipForgeError("Das markierte Objekt ist zu klein.", "Ziehe das Rechteck etwas größer.")
+        key = hashlib.sha1(f"{proj.source.streamer}|{proj.id}|{at}".encode()).hexdigest()[:10]
+        path = sub("profiles") / f"objekt_{key}.png"
+        cv2.imwrite(str(path), crop)
+        return str(path)
 
     # 6. Export
     def render_job(self, proj: Project, clip: Clip, out: Path, cam: Facecam | None = None,

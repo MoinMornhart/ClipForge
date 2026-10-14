@@ -17,10 +17,14 @@ LAYOUTS = {
     "stack": "Facecam oben, Gameplay unten",
     "corner": "Gameplay mit Facecam-Ecke",
     "cam": "Nur Facecam",
+    "hand": "Handcam oben, Gameplay unten",
+    "face_hand": "Facecam + Handcam + Gameplay",
+    "hand_only": "Nur Handcam",
     "blur": "Gameplay mittig, unscharfer Hintergrund",
     "crop": "Gameplay zugeschnitten (Vollbild)",
 }
 NEEDS_CAM = {"stack", "corner", "cam"}
+NEEDS_HAND = {"hand", "face_hand", "hand_only"}
 
 
 @dataclass
@@ -36,18 +40,40 @@ class LayoutInput:
     cam_xy: tuple[int, int] | None = None  # Startposition des Fensters
     tracked: bool = False  # sendcmd-Datei "track.txt" im Arbeitsordner vorhanden
     stack_top: int = 640  # Höhe der Facecam oben (≈ 1/3)
+    hand: Rect | None = None  # Handcam-Fenster im Quellbild (px)
+    face_hand_rows: tuple[int, int] = (560, 640)  # Höhen Facecam / Handcam im Layout face_hand
     content_y: int = 0  # Bildbereich ohne schwarze Balken (Kinoformat)
     content_h: int | None = None
     corner_width: int = 440
     accent: str = "0x9146FF"
 
 
-def resolve_layout(layout: str, has_cam: bool, fullcam: bool) -> str:
+def resolve_layout(layout: str, has_cam: bool, fullcam: bool, has_hand: bool = False) -> str:
     if layout in ("", "auto"):
+        if has_hand:
+            return "face_hand" if has_cam else "hand"
         return "cam" if fullcam else ("stack" if has_cam else "blur")
+    if layout in NEEDS_HAND and not has_hand:
+        layout = "stack" if layout == "face_hand" else "blur"
+    if layout == "face_hand" and not has_cam:
+        return "hand"
     if layout in NEEDS_CAM and not has_cam and not fullcam:
         return "blur"  # ohne Facecam keine Facecam-Layouts
     return layout
+
+
+def fit_window(region: Rect, aspect: float, center: tuple[float, float] | None = None) -> tuple[int, int, int, int]:
+    """Größtes Fenster mit Seitenverhältnis aspect in region, um center gelegt (x, y, b, h)."""
+    w, h = cam_window_size(region, aspect)
+    cx, cy = center or (region.cx, region.cy)
+    x = min(max(region.x, cx - w / 2), region.x + region.w - w)
+    y = min(max(region.y, cy - h / 2), region.y + region.h - h)
+    return _even(x), _even(y), w, h
+
+
+def _crop(win: tuple[int, int, int, int]) -> str:
+    x, y, w, h = win
+    return f"crop={w}:{h}:{x}:{y}"
 
 
 def _even(v: float) -> int:
@@ -97,6 +123,48 @@ def build(layout: str, li: LayoutInput) -> str:
             f"[top][bot]vstack=inputs=2,{tail}"
         )
 
+    if layout == "hand":
+        top, bottom = li.stack_top, H - li.stack_top
+        gw = gameplay_width(sh, W, bottom)
+        x = gx if gx is not None else (sw - gw) // 2
+        hw = fit_window(li.hand, W / top)
+        return (
+            f"[0:v]split=2[a][b];"
+            f"[a]{_crop(hw)},scale={W}:{top}:flags=lanczos,setsar=1[top];"
+            f"[b]crop={gw}:{sh}:{_even(x)}:{cy},scale={W}:{bottom}:flags=lanczos,setsar=1[bot];"
+            f"[top][bot]vstack=inputs=2,{tail}"
+        )
+
+    if layout == "face_hand":
+        fh_, hh_ = li.face_hand_rows
+        gh = H - fh_ - hh_
+        gw = gameplay_width(sh, W, gh)
+        x = gx if gx is not None else (sw - gw) // 2
+        face_c = (li.face.cx, li.face.cy) if li.face else None
+        fwin = fit_window(li.cam, W / fh_, face_c)
+        hwin = fit_window(li.hand, W / hh_)
+        return (
+            f"[0:v]split=3[a][b][c];"
+            f"[a]{_crop(fwin)},scale={W}:{fh_}:flags=lanczos,setsar=1[f];"
+            f"[b]{_crop(hwin)},scale={W}:{hh_}:flags=lanczos,setsar=1[h];"
+            f"[c]crop={gw}:{sh}:{_even(x)}:{cy},scale={W}:{gh}:flags=lanczos,setsar=1[g];"
+            f"[f][h][g]vstack=inputs=3,{tail}"
+        )
+
+    if layout == "hand_only":
+        c = li.hand
+        fh = _even(W * c.h / c.w)
+        crop = f"crop={_even(c.w)}:{_even(c.h)}:{_even(c.x)}:{_even(c.y)}"
+        if fh >= H:  # Handcam im Hochformat: auf 9:16 zuschneiden
+            return f"[0:v]{_crop(fit_window(c, W / H))},scale={W}:{H}:flags=lanczos,setsar=1,{tail}"
+        return (
+            f"[0:v]{crop},split=2[a][b];"
+            f"[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=12:2,"
+            f"scale={W}:{H},setsar=1[bg];"
+            f"[b]scale={W}:{fh}:flags=lanczos,setsar=1[fg];"
+            f"[bg][fg]overlay=0:(H-h)/2,{tail}"
+        )
+
     if layout == "corner":
         gw = gameplay_width(sh, W, H)
         x = gx if gx is not None else (sw - gw) // 2
@@ -118,7 +186,8 @@ def build(layout: str, li: LayoutInput) -> str:
         # Facecam-Fenster groß in die Mitte, unscharfe Kopie als Hintergrund
         c = li.cam
         fh = _even(W * c.h / c.w)
-        crop = f"crop={_even(c.w)}:{_even(c.h)}:{_even(c.x)}:{_even(c.y)}"
+        # mit markiertem Objekt: nachgeführter, mitzoomender Ausschnitt; sonst das ganze Fenster
+        crop = _cam_crop(li) if li.cam_window else f"crop={_even(c.w)}:{_even(c.h)}:{_even(c.x)}:{_even(c.y)}"
         return (
             f"[0:v]{crop},split=2[a][b];"
             f"[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=12:2,"
