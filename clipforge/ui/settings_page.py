@@ -129,7 +129,7 @@ class SettingsPage(QWidget):
              "kostenlos und läuft auf deiner Grafikkarte.", self._tab_stt),
             ("🔎  Trigger", "Trigger", "Woran ClipForge gute Momente erkennt: Sprachbefehle, eigene Begriffe, Chat- und "
              "Lautstärkespitzen.", self._tab_triggers),
-            ("✂  Clips", "Clips", "Wie lang die fertigen Clips sein dürfen.", self._tab_clips),
+            ("✂  Clips", "Clips", "Wie lang die Clips sein dürfen, welche Art von Momenten die KI bevorzugt, Hook-Text und Thumbnail.", self._tab_clips),
             ("💬  Untertitel", "Untertitel", "Aussehen der wortgenauen Untertitel im TikTok-Stil.", self._tab_subs),
             ("🙂  Facecam-Profile", "Facecam-Profile", "Gespeicherte Facecam-, Objekt- und Handcam-Rahmen je Streamer. "
              "Neue Profile legst du unter Clips → Facecam … an.", self._tab_profiles),
