@@ -25,6 +25,7 @@ from clipforge.pipeline.project import Project
 from clipforge.pipeline.runner import Pipeline
 from clipforge.pipeline.transcribe import Word
 from clipforge.ui import theme
+from clipforge.ui.library import VodLibrary
 from clipforge.ui.widgets import RangeSlider, RectSelector, bgr_to_qimage, fmt_time
 from clipforge.ui.worker import Task
 
@@ -328,7 +329,14 @@ class ClipsPage(QWidget):
         head.addWidget(self.sort)
         head.addWidget(self.show_rejected)
         head.addWidget(self.facecam_btn)
-        root.addLayout(head)
+        self.back_btn = QPushButton("← Alle VODs")
+        self.back_btn.setToolTip("Zurück zur Übersicht aller VODs")
+        self.back_btn.clicked.connect(self.show_library)
+        head.insertWidget(0, self.back_btn, 0, Qt.AlignTop)
+        self.head_w = QWidget()
+        self.head_w.setLayout(head)
+        head.setContentsMargins(0, 0, 0, 0)
+        root.addWidget(self.head_w)
 
         split = QSplitter(Qt.Horizontal)
         self.list = QListWidget()
@@ -494,6 +502,10 @@ class ClipsPage(QWidget):
         from PySide6.QtWidgets import QStackedWidget as _Stack
 
         self.body = _Stack()
+        # Startansicht: alle VODs nach Kanal, Klick öffnet die Clips
+        self.library = VodLibrary()
+        self.library.open_project.connect(self.open_project)
+        self.library.go_start.connect(self.go_start.emit)
         empty = QWidget()
         el = QVBoxLayout(empty)
         el.setAlignment(Qt.AlignCenter)
@@ -512,7 +524,8 @@ class ClipsPage(QWidget):
         for w in (icon, et, es):
             el.addWidget(w)
         el.addWidget(go, 0, Qt.AlignCenter)
-        self.body.addWidget(empty)
+        empty.hide()
+        self.body.addWidget(self.library)
         self.body.addWidget(split)
         root.addWidget(self.body, 1)
 
@@ -541,13 +554,28 @@ class ClipsPage(QWidget):
         bl.addWidget(self.export_bar)
         bl.addWidget(self.export_btn)
         root.addWidget(bottom)
+        self.bottom_w = bottom
         self._enable_editor(False)
+        self.show_library()
 
     def showEvent(self, e):
         # Listeneinträge, die gefüllt wurden, während die Seite verdeckt war, neu zeichnen
         super().showEvent(e)
-        if self.proj:
+        if self.body.currentIndex() == 0:
+            self.library.refresh()
+        elif self.proj:
             self._fill_list()
+
+    def show_library(self):
+        """Übersicht aller VODs zeigen (Startansicht der Clip-Seite)."""
+        self.player.pause()
+        self._save_timer.stop()
+        if self.proj and self.clips:
+            self._save()
+        self.head_w.hide()
+        self.bottom_w.hide()
+        self.body.setCurrentIndex(0)
+        self.library.refresh()
 
     # ------------------------------------------------------------------ Laden
     def open_project(self, pid: str):
@@ -567,6 +595,8 @@ class ClipsPage(QWidget):
                          f" · {len(self.clips)} Clips · {cam_txt} · API-Kosten: {self.proj.cost_text()}")
         self.player.setSource(QUrl.fromLocalFile(str(src.path)))
         self.body.setCurrentIndex(1)
+        self.head_w.show()
+        self.bottom_w.show()
         self._fill_list()
         self._make_thumbs()
 

@@ -96,6 +96,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
         self.toasts = ToastHost(self)
 
+        # „Clips“ in der Seitenleiste: erst die Übersicht aller VODs (vor dem Übergang, damit er sie zeigt)
+        self.nav.currentRowChanged.connect(lambda r: self.clips_page.show_library() if r == 1 else None)
         self.nav.currentRowChanged.connect(self.stack.slide_to)
         self.nav.setCurrentRow(0)
         for i in range(3):

@@ -4,7 +4,7 @@ import pytest
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 
 from clipforge.core.errors import Cancelled, ClipForgeError
-from clipforge.ui.worker import Task, running_tasks
+from clipforge.ui.worker import _RUNNING, Task
 
 
 @pytest.fixture(scope="module")
@@ -39,10 +39,11 @@ def test_finished_in_gui_thread(app):
         progress("x", 0.5, "halb")
         return 42
 
-    out = run(Task(work))
+    t = Task(work)
+    out = run(t)
     assert out["finished"] == (42,) and out["progress"] == [("x", 0.5, "halb")]
     assert out["threads"] == {True}  # Signale kommen im Fenster-Thread an
-    assert running_tasks() == 0
+    assert not t.is_running() and t not in _RUNNING  # nach dem Ende freigegeben
 
 
 def test_errors_and_cancel(app):
