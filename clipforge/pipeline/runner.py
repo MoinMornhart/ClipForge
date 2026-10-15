@@ -45,7 +45,17 @@ def export_fps(s: Settings, media: dict) -> int:
 
 
 _USER_FIELDS = ("id", "status", "title", "description", "hashtags", "layout", "score", "ai_reason", "export_path",
-                "edited_words", "user_bounds")
+                "edited_words", "user_bounds", "extras")
+
+EXTRAS = ("subtitles", "watermark", "intro_outro", "loudnorm")
+
+
+def extra_on(clip: Clip, s: Settings, key: str) -> bool:
+    """Ist ein Extra für diesen Clip an? Clip-Einstellung vor Grundeinstellung."""
+    if key in (clip.extras or {}):
+        return bool(clip.extras[key])
+    return {"subtitles": SubtitleStyle.from_dict(s.subtitles).enabled, "watermark": bool(s.watermark),
+            "intro_outro": bool(s.intro or s.outro), "loudnorm": s.loudnorm}[key]
 
 
 def _edited(c: Clip) -> bool:
@@ -394,13 +404,17 @@ class Pipeline:
     def render_job(self, proj: Project, clip: Clip, out: Path, cam: Facecam | None = None,
                    words: list | None = None) -> render.RenderJob:
         s = self.s
+        style = SubtitleStyle.from_dict(s.subtitles)
+        style.enabled = extra_on(clip, s, "subtitles")
+        io = extra_on(clip, s, "intro_outro")
         return render.RenderJob(
             proj.source.path, clip, out, clip.layout or s.default_layout, export_fps(s, proj.media), s.codec,
             s.use_nvenc,
             facecam=cam, words=words if words is not None else proj.load_words(),
-            subtitle_style=SubtitleStyle.from_dict(s.subtitles), loudnorm=s.loudnorm, trim_silence=s.trim_silence,
-            watermark=s.watermark, watermark_pos=s.watermark_pos, watermark_opacity=s.watermark_opacity,
-            intro=s.intro, outro=s.outro, track_face=s.track_face, smart_crop=s.smart_crop)
+            subtitle_style=style, loudnorm=extra_on(clip, s, "loudnorm"), trim_silence=s.trim_silence,
+            watermark=s.watermark if extra_on(clip, s, "watermark") else "", watermark_pos=s.watermark_pos,
+            watermark_opacity=s.watermark_opacity, intro=s.intro if io else "", outro=s.outro if io else "",
+            track_face=s.track_face, smart_crop=s.smart_crop)
 
     def export(self, proj: Project, clips: list[Clip] | None = None, only_approved: bool = False) -> list[Path]:
         all_clips = proj.load_clips()

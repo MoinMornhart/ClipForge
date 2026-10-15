@@ -72,3 +72,46 @@ def test_parallel_writes_never_fail(tmp_path):
         t.join()
     assert not errors
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_empty_vod_and_delete(tmp_path):
+    from clipforge.pipeline.clips import STATUS_REJECTED
+    from clipforge.pipeline.importer import Source
+
+    video = tmp_path / "vod.mp4"
+    video.write_bytes(b"x")
+    p = Project("t_empty")
+    p.set_source(Source(path=video, title="VOD", streamer="Bär", date="2026-10-15", url="https://kick.com/b/videos/1",
+                        platform="Kick"), {"duration": 60.0})
+    p.save_clips([Clip(0, 20, 18, ["x"], status=STATUS_REJECTED)])
+    p.mark("triggers")
+    assert p.is_empty and p.downloaded_video() == video
+    p.delete(remove_video=True)
+    assert not p.dir.exists() and not video.exists()
+
+
+def test_own_local_file_is_never_deleted(tmp_path):
+    from clipforge.pipeline.importer import Source
+
+    video = tmp_path / "meins.mp4"
+    video.write_bytes(b"x")
+    p = Project("t_local")
+    p.set_source(Source(path=video, title="Meins", streamer="", date="2026-10-15"), {"duration": 60.0})
+    assert p.downloaded_video() is None
+    p.delete(remove_video=True)
+    assert video.exists()
+
+
+def test_clip_extras_override_settings():
+    from clipforge.core.settings import Settings
+    from clipforge.pipeline.runner import extra_on
+
+    s = Settings()
+    s.watermark = "logo.png"
+    c = Clip(0, 20, 18, [])
+    assert extra_on(c, s, "subtitles") and extra_on(c, s, "watermark") and not extra_on(c, s, "intro_outro")
+    c.extras = {"subtitles": False, "watermark": False}
+    assert not extra_on(c, s, "subtitles") and not extra_on(c, s, "watermark")
+    # Neu-Analyse behält die Schalter
+    new = carry_over([c], [Clip(1, 21, 18.5, ["neu"])])
+    assert new[0].extras == {"subtitles": False, "watermark": False}

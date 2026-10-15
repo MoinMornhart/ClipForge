@@ -174,8 +174,15 @@ def plan(job: RenderJob, media: dict, work: Path) -> tuple[str, str]:
     return layout, graph.replace("[v]", "[vl]")
 
 
+def _zero_start(graph: str) -> str:
+    """Zeitstempel ab 0 beginnen lassen. Manche Dateien (z. B. aus OBS-/TS-Aufnahmen) starten intern nicht bei 0 –
+    dann kämen die Untertitel um diesen Versatz zu spät. Das Gegenstück für den Ton steht in afilter."""
+    return graph.replace("[0:v]", "[0:v]setpts=PTS-STARTPTS,", 1)
+
+
 def preview_frame(src: Path, at: float, layout: str, cam: fc.Facecam | None, media: dict, out_png: Path,
-                  ffmpeg_path: str = "") -> Path:
+                  ffmpeg_path: str = "", words: list[Word] | None = None,
+                  subtitle_style: SubtitleStyle | None = None) -> Path:
     """Ein einzelnes 9:16-Bild mit dem gewählten Layout – für die Live-Vorschau im Facecam-Dialog.
     Ohne Nachführung und ohne Bildanalyse, damit es in unter einer Sekunde fertig ist."""
     work = Path(tempfile.mkdtemp(prefix="cf_preview_"))
@@ -183,7 +190,16 @@ def preview_frame(src: Path, at: float, layout: str, cam: fc.Facecam | None, med
         job = RenderJob(src, Clip(at, at + 1.0, at, []), out_png, layout, facecam=cam, smart_crop=False,
                         track_face=False)
         _, graph = plan(job, media, work)
-        graph = graph.replace("[vl]", "[v]")
+        graph = _zero_start(graph)
+        if subtitle_style and subtitle_style.enabled and words:
+            # Wörter rund um den Zeitpunkt, Zeiten relativ zum Vorschaubild (= Sekunde 0)
+            near = [Word(w.w, max(0.0, w.s - at), max(0.05, w.e - at), w.p) for w in words if w.e > at - 2 and w.s < at + 3]
+            if near:
+                (work / "subs.ass").write_text(build_ass(near, subtitle_style, 3.0), encoding="utf-8")
+                prepare_fonts(subtitle_style, work)
+                graph += ";[vl]subtitles=subs.ass:fontsdir=fonts[v]"
+        if "[v]" not in graph:
+            graph = graph.replace("[vl]", "[v]")
         ffmpeg.run(["-ss", f"{at:.3f}", "-i", str(src), "-filter_complex", graph, "-map", "[v]", "-frames:v", "1",
                     "-update", "1", str(out_png.resolve())], configured=ffmpeg_path, cwd=work,
                    error_message="Die Vorschau konnte nicht erstellt werden.")
@@ -214,6 +230,7 @@ def render(job: RenderJob, on_progress: Callable[[float], None] | None = None,
     work = Path(tempfile.mkdtemp(prefix="cf_render_"))
     try:
         layout, graph = plan(RenderJob(**{**job.__dict__, "clip": trimmed}), media, work)
+        graph = _zero_start(graph)
         chain = [graph]
         last = "vl"
         style = job.subtitle_style
@@ -232,7 +249,8 @@ def render(job: RenderJob, on_progress: Callable[[float], None] | None = None,
                          f"[{last}][wm]overlay={pos}:shortest=1[vw]")
             last = "vw"
         chain.append(f"[{last}]null[v]")
-        afilter = ["-af", "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000"] if job.loudnorm else []
+        afilter = ["-af", "asetpts=PTS-STARTPTS" + (",loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000"
+                                                    if job.loudnorm else "")]
         # im Arbeitsordner rendern, erst fertig in den Exportordner: Abbruch hinterlässt keine halbe Datei
         final = work / "final.mp4"
         main_out = final if not (job.intro or job.outro) else work / "main.mp4"

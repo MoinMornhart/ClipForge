@@ -416,6 +416,25 @@ class ClipsPage(QWidget):
         ctl.addWidget(self.layout_box)
         ctl.addWidget(self.preview_btn)
         rl.addLayout(ctl)
+        # Extras nur für diesen Clip an/aus (Grundeinstellung unter Einstellungen → Untertitel / Export)
+        ext = QHBoxLayout()
+        ext.addWidget(QLabel("Im Clip:"))
+        self.extra_boxes: dict[str, QCheckBox] = {}
+        for key, label, tip in (("subtitles", "Untertitel", "Untertitel in diesen Clip einbrennen"),
+                                ("watermark", "Wasserzeichen", "Wasserzeichen-Bild einblenden"),
+                                ("intro_outro", "Intro/Outro", "Intro- und Outro-Video anhängen"),
+                                ("loudnorm", "Lautstärke angleichen", "Ton auf -14 LUFS angleichen")):
+            cb = QCheckBox(label)
+            cb.setToolTip(tip)
+            cb.toggled.connect(lambda on, k=key: self._extra_changed(k, on))
+            self.extra_boxes[key] = cb
+            ext.addWidget(cb)
+        ext.addStretch(1)
+        self.extras_all = QPushButton("Für alle Clips übernehmen")
+        self.extras_all.setToolTip("Diese Schalter für alle Clips dieses VODs setzen")
+        self.extras_all.clicked.connect(self._extras_to_all)
+        ext.addWidget(self.extras_all)
+        rl.addLayout(ext)
 
         # Status-Leiste: Freigeben/Verwerfen immer sichtbar
         act = QHBoxLayout()
@@ -591,7 +610,8 @@ class ClipsPage(QWidget):
         fcm = Facecam.from_dict(self.proj.state.get("facecam"))
         cam_txt = {"overlay": "Facecam erkannt", "fullcam": "Nur-Kamera", "none": "keine Facecam"}.get(
             fcm.mode if fcm else "", "Facecam unbekannt")
-        self.sub.setText(f"{src.streamer or 'Datei'} · {src.platform} · {fmt_time(self.proj.media.get('duration', 0))}"
+        who = f"{src.streamer} · {src.platform}" if src.streamer else "Lokale Datei"
+        self.sub.setText(f"{who} · {fmt_time(self.proj.media.get('duration', 0))}"
                          f" · {len(self.clips)} Clips · {cam_txt} · API-Kosten: {self.proj.cost_text()}")
         self.player.setSource(QUrl.fromLocalFile(str(src.path)))
         self.body.setCurrentIndex(1)
@@ -713,10 +733,44 @@ class ClipsPage(QWidget):
         lo, hi = max(0.0, c.start - 45), min(dur, c.end + 30)
         self.range.set_range(lo, hi, c.start, c.end, [c.trigger_time])
         self._show_transcript()
+        self._load_extras(c)
         self._loading = False
         self.player.setPosition(int(c.start * 1000))
         self._show_still()
         self._pv916_timer.start()
+
+    def _load_extras(self, c: Clip):
+        from clipforge.pipeline.runner import extra_on
+
+        s = self.s
+        files = {"watermark": bool(s.watermark), "intro_outro": bool(s.intro or s.outro)}
+        for key, cb in self.extra_boxes.items():
+            cb.blockSignals(True)
+            cb.setChecked(extra_on(c, s, key))
+            ok = files.get(key, True)
+            cb.setEnabled(ok)
+            cb.setToolTip(cb.toolTip().split(" – ")[0] + ("" if ok else " – erst unter Einstellungen → Export eine Datei wählen"))
+            cb.blockSignals(False)
+
+    def _extra_changed(self, key: str, on: bool):
+        if self._loading or not self.cur:
+            return
+        self.cur.extras = {**(self.cur.extras or {}), key: on}
+        self._save_timer.start()
+        self._pv916_timer.start()
+        names = {"subtitles": "Untertitel", "watermark": "Wasserzeichen", "intro_outro": "Intro/Outro",
+                 "loudnorm": "Lautstärke angleichen"}
+        self.status_message.emit(f"{names[key]} für diesen Clip {'an' if on else 'aus'}.")
+
+    def _extras_to_all(self):
+        if not self.cur:
+            return
+        vals = {k: cb.isChecked() for k, cb in self.extra_boxes.items() if cb.isEnabled()}
+        for c in self.clips:
+            c.extras = {**(c.extras or {}), **vals}
+        self._save()
+        self._fill_list()
+        self.status_message.emit(f"Für alle {len(self.clips)} Clips übernommen.")
 
     def _render_916(self):
         """Ein Bild aus der Clipmitte im gewählten Layout rendern (unter 1 s) und neben dem Player zeigen."""
@@ -729,11 +783,20 @@ class ClipsPage(QWidget):
         import hashlib
         import json
 
+        from clipforge.pipeline.runner import extra_on
+        from clipforge.pipeline.subtitles import SubtitleStyle
+
         cam = Facecam.from_dict(proj.state.get("facecam"))
         layout = c.layout or self.s.default_layout
+        words = [Word(w, s, e) for w, s, e in c.edited_words] if c.edited_words else \
+            [w for w in self.words if c.start <= w.s < c.end]
         at = round((c.start + c.end) / 2, 1)
-        key = hashlib.sha1(json.dumps([layout, at, proj.state.get("facecam")], sort_keys=True,
-                                      default=str).encode()).hexdigest()[:12]
+        if words and not any(w.s <= at <= w.e for w in words):  # Bild mit gesprochenem Wort (zeigt Untertitel)
+            at = round(min(words, key=lambda w: abs(w.s - at)).s + 0.1, 2)
+        style = SubtitleStyle.from_dict(self.s.subtitles)
+        style.enabled = extra_on(c, self.s, "subtitles")
+        key = hashlib.sha1(json.dumps([layout, at, proj.state.get("facecam"), style.enabled, self.s.subtitles,
+                                       c.edited_words], sort_keys=True, default=str).encode()).hexdigest()[:12]
         out = proj.dir / "pv916" / f"{key}.png"
         self._pv916_key = key
         if out.exists():
@@ -743,7 +806,8 @@ class ClipsPage(QWidget):
         media = proj.media
 
         def job(progress, cancel, confirm):
-            return render.preview_frame(proj.source.path, at, layout, cam, media, out)
+            return render.preview_frame(proj.source.path, at, layout, cam, media, out, words=words,
+                                        subtitle_style=style)
 
         t = Task(job)
         self._pv916_task = t

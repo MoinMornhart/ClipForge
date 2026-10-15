@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLayout, QLineEdit, QPushButton, QScrollArea,
-                               QSizePolicy, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel, QLayout, QLineEdit, QMessageBox,
+                               QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
 from clipforge.pipeline.clips import STATUS_APPROVED, STATUS_EXPORTED, STATUS_REJECTED
 from clipforge.pipeline.project import Project
@@ -74,6 +74,7 @@ class FlowLayout(QLayout):
 
 class VodCard(QFrame):
     clicked = Signal(str)
+    remove = Signal(str)
 
     def __init__(self, p: Project):
         super().__init__()
@@ -127,6 +128,20 @@ class VodCard(QFrame):
                         "font-size:8.5pt; font-weight:700;")
         b.adjustSize()
         b.move(CARD_W - b.width() - 8, 8)
+        rm = QPushButton("✕", img)
+        rm.setToolTip("VOD aus ClipForge entfernen")
+        rm.setCursor(Qt.PointingHandCursor)
+        rm.setFixedSize(26, 26)
+        rm.setStyleSheet("QPushButton{background:rgba(10,12,16,190); border:none; border-radius:13px; padding:0;"
+                         f"color:{theme.MUTED}; font-weight:700;}} QPushButton:hover{{color:{theme.BAD};}}")
+        rm.move(8, 8)
+        rm.clicked.connect(lambda: self.remove.emit(self.pid))
+        if live and done == len(live):
+            pass
+        elif not live:  # alle Clips verworfen
+            b.setText("leer")
+            b.adjustSize()
+            b.move(CARD_W - b.width() - 8, 8)
         self.search_text = f"{src.title} {src.streamer} {src.date}".lower()
 
     def mouseReleaseEvent(self, e):
@@ -162,6 +177,11 @@ class VodLibrary(QWidget):
         self.search.setFixedWidth(300)
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter)
+        self.show_empty = QCheckBox("Leere VODs zeigen")
+        self.show_empty.setToolTip("VODs, deren Clips alle verworfen sind, werden sonst ausgeblendet")
+        self.show_empty.toggled.connect(lambda _: self.refresh())
+        head.addWidget(self.show_empty, 0, Qt.AlignBottom)
+        head.addSpacing(12)
         head.addWidget(self.search, 0, Qt.AlignBottom)
         root.addLayout(head)
 
@@ -202,7 +222,12 @@ class VodLibrary(QWidget):
             if it.widget():
                 it.widget().deleteLater()
         self.cards, self.groups = [], []
-        projects = [p for p in Project.all() if p.source]
+        every = [p for p in Project.all() if p.source]
+        # VODs, deren Clips alle verworfen sind, verschwinden aus der Übersicht (zuschaltbar)
+        hidden = [p for p in every if p.is_empty]
+        projects = every if self.show_empty.isChecked() else [p for p in every if not p.is_empty]
+        self.show_empty.setVisible(bool(hidden))
+        self.show_empty.setText(f"Leere VODs zeigen ({len(hidden)})")
         self.empty.setVisible(not projects)
         self.scroll.setVisible(bool(projects))
         self.search.setVisible(bool(projects))
@@ -237,6 +262,7 @@ class VodLibrary(QWidget):
             for p in items:
                 card = VodCard(p)
                 card.clicked.connect(self.open_project.emit)
+                card.remove.connect(self._remove)
                 flow.addWidget(card)
                 self.cards.append((card, box))
                 if not (p.dir / "cover.jpg").exists() and p.id not in self._cover_tried:
@@ -248,6 +274,28 @@ class VodLibrary(QWidget):
         self._filter(self.search.text())
         if missing and self._cover_task is None:
             self._make_covers(missing)
+
+    def _remove(self, pid: str):
+        p = Project(pid)
+        if not p.source:
+            return
+        video = p.downloaded_video()
+        box = QMessageBox(QMessageBox.Question, "VOD entfernen",
+                          f"„{p.source.title}“ aus ClipForge entfernen?\n\nClips, Titel und Transkript dieses VODs "
+                          "werden gelöscht. Bereits exportierte Clips im Exportordner bleiben erhalten.",
+                          QMessageBox.Yes | QMessageBox.Cancel, self)
+        box.button(QMessageBox.Yes).setText("Entfernen")
+        box.button(QMessageBox.Cancel).setText("Abbrechen")
+        cb = None
+        if video:
+            size = video.stat().st_size / 1e9
+            cb = QCheckBox(f"Auch das heruntergeladene Video löschen ({size:.1f} GB)")
+            cb.setChecked(True)
+            box.setCheckBox(cb)
+        if box.exec() != QMessageBox.Yes:
+            return
+        p.delete(remove_video=bool(cb and cb.isChecked()))
+        self.refresh()
 
     def _filter(self, text: str):
         q = text.strip().lower()

@@ -30,6 +30,9 @@ class Clip:
     # Im Editor korrigierte Wörter dieses Clips: [[wort, start, ende], …] in VOD-Sekunden
     edited_words: list[list] = field(default_factory=list)
     user_bounds: bool = False  # Start/Ende von Hand gesetzt: bei Neu-Analyse behalten
+    # Extras nur für diesen Clip an/aus: {"subtitles"|"watermark"|"intro_outro"|"loudnorm": bool};
+    # fehlt ein Schlüssel, gilt die Grundeinstellung
+    extras: dict = field(default_factory=dict)
 
     @property
     def duration(self) -> float:

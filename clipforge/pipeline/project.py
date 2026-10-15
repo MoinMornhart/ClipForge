@@ -66,6 +66,37 @@ class Project:
     def done(self, step: str) -> bool:
         return bool(self.state.get("steps", {}).get(step))
 
+    def live_clips(self) -> int:
+        """Clips, die nicht verworfen sind."""
+        from clipforge.pipeline.clips import STATUS_REJECTED
+
+        return sum(c.status != STATUS_REJECTED for c in self.load_clips())
+
+    @property
+    def is_empty(self) -> bool:
+        """Fertig analysiert, aber alle Clips verworfen (oder keine gefunden)."""
+        return self.done("triggers") and self.live_clips() == 0
+
+    def downloaded_video(self) -> Path | None:
+        """Die von ClipForge heruntergeladene Videodatei – nur dann darf sie beim Entfernen mitgelöscht werden.
+        Eigene, lokal hinzugefügte Dateien werden nie angefasst."""
+        src = self.source
+        if src and src.url and src.path.exists():
+            return src.path
+        return None
+
+    def delete(self, remove_video: bool = False) -> None:
+        """Projekt entfernen (Transkript, Clips, Vorschaubilder); optional auch das heruntergeladene VOD."""
+        import shutil
+
+        video = self.downloaded_video() if remove_video else None
+        shutil.rmtree(self.dir, ignore_errors=True)
+        if video:
+            try:
+                video.unlink()
+            except OSError:  # gerade geöffnet: bleibt liegen
+                pass
+
     def mark(self, step: str, value=True) -> None:
         self.state.setdefault("steps", {})[step] = value
         self.save()
