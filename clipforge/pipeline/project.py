@@ -125,6 +125,9 @@ class Project:
             "calls": calls, "at": dt.datetime.now().isoformat(timespec="seconds"),
         })
         self.save()
+        from clipforge.core import budget
+
+        budget.record(usd, kind, provider, self.id)  # Kassenbuch fürs Ausgabenlimit (bleibt beim Löschen)
 
     @property
     def cost_summary(self) -> dict:

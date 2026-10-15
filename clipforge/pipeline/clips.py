@@ -33,6 +33,8 @@ class Clip:
     # Extras nur für diesen Clip an/aus: {"subtitles"|"watermark"|"intro_outro"|"loudnorm": bool};
     # fehlt ein Schlüssel, gilt die Grundeinstellung
     extras: dict = field(default_factory=dict)
+    hook: str = ""  # Hook-Text für die ersten Sekunden und das Thumbnail (von der KI, im Editor änderbar)
+    category: str = ""  # Clip-Art laut KI (lustig, ragebait, rp, skill, fail, emotional, sonstiges)
 
     @property
     def duration(self) -> float:

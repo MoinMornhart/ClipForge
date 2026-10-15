@@ -223,6 +223,20 @@ Die KI bekommt das Transkript rund um den Trigger (120 s davor, 30 s danach) als
 
 **Lautstärkespitzen:** Schreien, Lachen und Jubel werden relativ zum Umfeld erkannt. Ein durchgehend lautes Spiel löst also nicht ständig aus.
 
+### Was einen guten Clip ausmacht
+
+Die KI bewertet und schneidet nach dem, was bei Kurzvideos nachweislich zählt (Stand Oktober 2026, ausgewertet aus aktuellen Analysen zu Gaming-Shorts und viralen TikToks):
+
+- **Hook in den ersten 1–2 Sekunden.** Viele wischen nach den ersten Sekunden weg. Der Clip beginnt mitten in der Spannung, nicht beim Aufbau, ohne Begrüßung und Leerlauf, und bleibt trotzdem ohne Vorwissen verständlich.
+- **Kurz und mit Pointe.** Ideal sind 15–40 Sekunden, der Clip endet kurz nach der Reaktion.
+- **Große Untertitel.** Viele schauen ohne Ton.
+- **Hook-Text:** 2–6 Wörter oben in den ersten 3 Sekunden, die neugierig machen, ohne die Pointe zu verraten.
+- **Hashtags gemischt:** spezielle (Spiel, Situation) plus allgemeine (#gaming, #fyp).
+
+Unter **Einstellungen → Clips → Bevorzugte Clip-Arten** legst du fest, was die KI höher bewertet: **Lustig**, **Ragebait** (steile Thesen, Ausraster, unfaire Situationen, Streit – polarisierend, aber ohne Menschen oder Gruppen herabzuwürdigen), **RP / Story** (Rollenspiel-Szenen, Improvisation), **Skill / Clutch**, **Fails** und **Emotional**. Jeder Clip bekommt seine Art, sie steht in der .txt neben dem Video.
+
+**Thumbnail:** Beim Export entsteht je Clip `…_thumbnail.jpg`, das schärfste Bild rund um den Moment im Layout des Clips, mit großem Hook-Text. Ein klarer Blickfang, wenige Wörter, hoher Kontrast, alles Wichtige mittig, weil Shorts im Feed oben und unten abgeschnitten werden. Bei „Facecam oben“ sitzt der Text im Übergang zum Spiel und verdeckt kein Gesicht. Für TikTok und Instagram als Titelbild hochladen; bei YouTube Shorts wählt YouTube das Vorschaubild selbst aus dem Video.
+
 ---
 
 ## Facecam und Layouts

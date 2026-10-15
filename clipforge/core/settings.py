@@ -74,6 +74,13 @@ class Settings:
     llm_effort: str = "medium"  # nur Claude: low | medium | high
     context_before: float = 120.0  # Sekunden Transkript vor dem Trigger, die die KI sieht
     context_after: float = 30.0
+    # Bevorzugte Clip-Arten für die KI (Schlüssel aus llm.CLIP_STYLES); alle an = ausgewogen
+    clip_styles: list = field(default_factory=lambda: ["lustig", "ragebait", "rp", "skill", "fail", "emotional"])
+    hook_text: bool = True  # Hook-Text (2–6 Wörter) in den ersten Sekunden einblenden
+    cover_image: bool = True  # beim Export ein Thumbnail-Bild je Clip erzeugen
+    budget_eur: float = 0.0  # Ausgabenlimit für bezahlte Anbieter in € (0 = kein Limit)
+    budget_period: str = "monat"  # "monat" (Kalendermonat) | "gesamt"
+    usd_to_eur: float = 0.86  # Umrechnung, Anbieter rechnen in US-$
     min_score: int = 0  # Clips unter diesem Viral-Score automatisch verwerfen (0 = aus)
     # Eigene Preise je Modell: {"modell": [Eingabe $/1M, Ausgabe $/1M]}
     price_overrides: dict = field(default_factory=dict)

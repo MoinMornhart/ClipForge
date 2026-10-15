@@ -21,7 +21,7 @@ from clipforge.core.settings import Settings
 from clipforge.pipeline import facecam as fc
 from clipforge.pipeline import layouts
 from clipforge.pipeline.clips import Clip
-from clipforge.pipeline.subtitles import SubtitleStyle, build_ass, clip_words, prepare_fonts
+from clipforge.pipeline.subtitles import SubtitleStyle, build_ass, build_hook_ass, clip_words, prepare_fonts
 from clipforge.pipeline.transcribe import Word
 
 log = get_logger("render")
@@ -52,6 +52,7 @@ class RenderJob:
     track_face: bool = True
     smart_crop: bool = True
     cam_size: int = 40  # Facecam-/Handcam-Bereich oben: höchstens so viel % der Bildhöhe
+    hook: str = ""  # Hook-Text, der in den ersten Sekunden eingeblendet wird ("" = keiner)
 
 
 def encoder_args(codec: str, nvenc: bool) -> list[str]:
@@ -185,14 +186,15 @@ def _zero_start(graph: str) -> str:
 
 def preview_frame(src: Path, at: float, layout: str, cam: fc.Facecam | None, media: dict, out_png: Path,
                   ffmpeg_path: str = "", words: list[Word] | None = None,
-                  subtitle_style: SubtitleStyle | None = None, cam_size: int = 40) -> Path:
+                  subtitle_style: SubtitleStyle | None = None, cam_size: int = 40, hook: str = "",
+                  hook_mode: str = "hook") -> Path:
     """Ein einzelnes 9:16-Bild mit dem gewählten Layout – für die Live-Vorschau im Facecam-Dialog.
     Ohne Nachführung und ohne Bildanalyse, damit es in unter einer Sekunde fertig ist."""
     work = Path(tempfile.mkdtemp(prefix="cf_preview_"))
     try:
         job = RenderJob(src, Clip(at, at + 1.0, at, []), out_png, layout, facecam=cam, smart_crop=False,
                         track_face=False, cam_size=cam_size)
-        _, graph = plan(job, media, work)
+        resolved, graph = plan(job, media, work)
         graph = _zero_start(graph)
         if subtitle_style and subtitle_style.enabled and words:
             # Wörter rund um den Zeitpunkt, Zeiten relativ zum Vorschaubild (= Sekunde 0)
@@ -200,11 +202,29 @@ def preview_frame(src: Path, at: float, layout: str, cam: fc.Facecam | None, med
             if near:
                 (work / "subs.ass").write_text(build_ass(near, subtitle_style, 3.0), encoding="utf-8")
                 prepare_fonts(subtitle_style, work)
-                graph += ";[vl]subtitles=subs.ass:fontsdir=fonts[v]"
-        if "[v]" not in graph:
-            graph = graph.replace("[vl]", "[v]")
+                graph += ";[vl]subtitles=subs.ass:fontsdir=fonts[vs]"
+        last = "vs" if "[vs]" in graph else "vl"
+        if hook.strip():
+            hs = subtitle_style or SubtitleStyle()
+            top = None
+            if hook_mode == "cover" and resolved in ("stack", "hand", "face_hand") and cam:
+                # Thumbnail-Text in den Übergang Kamera → Gameplay statt aufs Gesicht
+                r = cam.cam if resolved == "stack" else cam.handcam
+                if resolved == "face_hand":
+                    top = sum(layouts.LayoutInput(1, 1).face_hand_rows) - 40
+                elif r:
+                    hi = layouts._even(H * min(50, max(25, cam_size)) / 100)
+                    ph = layouts.panel_height(fc.Rect.from_norm(r, media["width"], media["height"]),
+                                              min(layouts.PANEL_MIN, hi), hi)
+                    top = max(120, ph - 110)
+            (work / "hook.ass").write_text(build_hook_ass(hook, hs, hook_mode, top=top), encoding="utf-8")
+            prepare_fonts(hs, work)
+            graph += f";[{last}]subtitles=hook.ass:fontsdir=fonts[vh]"
+            last = "vh"
+        graph = graph.replace(f"[{last}]", "[v]") if graph.endswith(f"[{last}]") else graph + f";[{last}]null[v]"
+        quality = ["-q:v", "2"] if out_png.suffix.lower() in (".jpg", ".jpeg") else []
         ffmpeg.run(["-ss", f"{at:.3f}", "-i", str(src), "-filter_complex", graph, "-map", "[v]", "-frames:v", "1",
-                    "-update", "1", str(out_png.resolve())], configured=ffmpeg_path, cwd=work,
+                    *quality, "-update", "1", str(out_png.resolve())], configured=ffmpeg_path, cwd=work,
                    error_message="Die Vorschau konnte nicht erstellt werden.")
         return out_png
     finally:
@@ -244,6 +264,12 @@ def render(job: RenderJob, on_progress: Callable[[float], None] | None = None,
                 prepare_fonts(style, work)
                 chain.append(f"[{last}]subtitles=subs.ass:fontsdir=fonts[vs]")
                 last = "vs"
+        if job.hook.strip():
+            hs = style or SubtitleStyle()
+            (work / "hook.ass").write_text(build_hook_ass(job.hook, hs, "hook", min(3.0, dur)), encoding="utf-8")
+            prepare_fonts(hs, work)
+            chain.append(f"[{last}]subtitles=hook.ass:fontsdir=fonts[vh]")
+            last = "vh"
         inputs = ["-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(job.src)]
         if job.watermark and Path(job.watermark).exists():
             inputs += ["-loop", "1", "-i", str(job.watermark)]
@@ -341,6 +367,29 @@ def unique_path(p: Path) -> Path:
     return q
 
 
+def cover_time(src: Path, clip: Clip) -> float:
+    """Bild fürs Thumbnail: das schärfste rund um den Moment (kurz vor bis kurz nach dem Auslöser) –
+    unscharfe Bewegungsbilder wirken auf dem Handy matschig."""
+    import cv2
+    import numpy as np
+
+    a = max(clip.start + 0.5, clip.trigger_time - 4.0)
+    b = min(clip.end - 0.3, clip.trigger_time + 1.0)
+    if b <= a:
+        a, b = clip.start + 0.5, max(clip.start + 0.6, clip.end - 0.3)
+    times = [a + (b - a) * i / 7 for i in range(8)]
+    focus = clip.trigger_time - 1.0  # der Moment selbst, nicht Menüs davor/danach
+    best_t, best = (a + b) / 2, -1.0
+    for t, f in fc.read_frames(src, times, max_w=480):
+        g = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
+        sharp = cv2.Laplacian(g, cv2.CV_64F).var()
+        color = float(np.std(f.astype(np.float32), axis=2).mean())  # farbige Bilder ziehen mehr
+        score = sharp * (1 + color / 40) * max(0.3, 1 - 0.12 * abs(t - focus))
+        if score > best:
+            best_t, best = t, score
+    return best_t
+
+
 def write_metadata(clip: Clip, video_path: Path) -> Path:
     txt = video_path.with_suffix(".txt")
     tags = " ".join(t if t.startswith("#") else f"#{t}" for t in clip.hashtags)
@@ -352,6 +401,8 @@ def write_metadata(clip: Clip, video_path: Path) -> Path:
         "",
         f"Hashtags: {tags}",
         "",
+        *([f"Hook-Text: {clip.hook}", ""] if clip.hook else []),
+        *([f"Art: {clip.category}"] if clip.category else []),
         f"Viral-Score: {clip.score if clip.score is not None else '–'}/10",
         f"Grund: {'; '.join(clip.reasons)}",
     ]

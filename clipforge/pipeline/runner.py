@@ -45,9 +45,9 @@ def export_fps(s: Settings, media: dict) -> int:
 
 
 _USER_FIELDS = ("id", "status", "title", "description", "hashtags", "layout", "score", "ai_reason", "export_path",
-                "edited_words", "user_bounds", "extras")
+                "edited_words", "user_bounds", "extras", "hook", "category")
 
-EXTRAS = ("subtitles", "watermark", "intro_outro", "loudnorm")
+EXTRAS = ("subtitles", "hook", "watermark", "intro_outro", "loudnorm")
 
 
 def cam_size(clip: Clip, s: Settings) -> int:
@@ -59,7 +59,8 @@ def extra_on(clip: Clip, s: Settings, key: str) -> bool:
     """Ist ein Extra für diesen Clip an? Clip-Einstellung vor Grundeinstellung."""
     if key in (clip.extras or {}):
         return bool(clip.extras[key])
-    return {"subtitles": SubtitleStyle.from_dict(s.subtitles).enabled, "watermark": bool(s.watermark),
+    return {"subtitles": SubtitleStyle.from_dict(s.subtitles).enabled, "hook": s.hook_text,
+            "watermark": bool(s.watermark),
             "intro_outro": bool(s.intro or s.outro), "loudnorm": s.loudnorm}[key]
 
 
@@ -149,9 +150,28 @@ class Pipeline:
                 self._backend = ApiWhisper(prov.name, prov.base_url, key, self.s.stt_api_model or prov.default_model)
         return self._backend
 
+    def _check_budget_stt(self, proj: Project) -> None:
+        """Bezahlte Transkription nur starten, wenn das Ausgabenlimit sie noch deckt."""
+        from clipforge.core import budget
+
+        prov = self.s.transcription_backend
+        rem = budget.remaining_usd(self.s)
+        if prov == "local" or rem is None:
+            return
+        model = self.s.stt_api_model or STT_PROVIDERS[prov].default_model
+        price = STT_PRICES_PER_MIN.get(f"{prov}:{model}")
+        need = (price or 0) * proj.media["duration"] / 60
+        if need > rem:
+            eur = self.s.usd_to_eur
+            raise ClipForgeError(
+                f"Das Ausgabenlimit reicht für die Transkription nicht (nötig ca. {need * eur:.2f} €, "
+                f"übrig {max(0.0, rem) * eur:.2f} €).".replace(".", ","),
+                "Limit unter Einstellungen → KI & API-Keys erhöhen oder lokal transkribieren (kostenlos).")
+
     def transcribe(self, proj: Project) -> None:
         if proj.done("transcribe") and proj.transcript_path.exists():
             return
+        self._check_budget_stt(proj)
         src = proj.source
         self.progress("transcribe", 0.0, "Lade Sprachmodell …")
         backend = self.backend()
@@ -234,7 +254,15 @@ class Pipeline:
 
     def estimate(self, proj: Project, clips: list[Clip] | None = None) -> CostEstimate:
         words = proj.load_words() if clips is not None else None
-        return estimate_cost(self.s, proj.media.get("duration", 0.0), clips, words)
+        return self._with_budget(estimate_cost(self.s, proj.media.get("duration", 0.0), clips, words))
+
+    def _with_budget(self, est: CostEstimate) -> CostEstimate:
+        from clipforge.pipeline.llm import budget_note
+
+        note = budget_note(self.s, est)
+        if note:
+            est.notes.append(note)
+        return est
 
     def score(self, proj: Project, clips: list[Clip]) -> list[Clip]:
         if not self.s.ai_enabled or self.s.llm_provider == "none":
@@ -249,12 +277,24 @@ class Pipeline:
             log.warning("KI-Bewertung übersprungen: %s", e)
             self.progress("score", 1.0, f"KI-Bewertung übersprungen: {e.message}")
             return clips
+        from clipforge.core import budget
+
         words = proj.load_words()
         duration = proj.media["duration"]
+        rem = budget.remaining_usd(self.s)  # None = kein Limit
+        stopped = 0
+        if rem is not None and rem <= 0:
+            self.progress("score", 1.0, "KI-Bewertung übersprungen: Ausgabenlimit erreicht "
+                                        f"({budget.status_text(self.s)})")
+            return clips
         try:
             for n, clip in enumerate(todo, 1):
                 if self.cancel.is_set():
                     raise Cancelled()
+                spent = scorer.cost_usd()
+                if rem is not None and spent is not None and spent >= rem:
+                    stopped = len(todo) - n + 1  # Limit erreicht: Rest bleibt unbewertet, nichts geht verloren
+                    break
                 self.progress("score", (n - 1) / len(todo), f"KI bewertet Clip {n}/{len(todo)}")
                 scorer.score_clip(clip, words, duration)
                 if self.s.min_score and clip.score is not None and clip.score < self.s.min_score:
@@ -271,8 +311,12 @@ class Pipeline:
         proj.save_clips(clips)
         cost = scorer.cost_usd()
         used = f"{scorer.usage.input_tokens + scorer.usage.output_tokens:,} Tokens".replace(",", ".")
-        self.progress("score", 1.0, f"{len(todo)} Clips bewertet · {used}"
-                      + (f" · {cost:.3f} $" if cost is not None else ""))
+        if stopped:
+            self.progress("score", 1.0, f"Ausgabenlimit erreicht: {len(todo) - stopped} Clips bewertet, {stopped} "
+                                        f"ohne Bewertung · {budget.status_text(self.s)}")
+        else:
+            self.progress("score", 1.0, f"{len(todo)} Clips bewertet · {used}"
+                          + (f" · {cost:.3f} $" if cost is not None else "") + f" · {budget.status_text(self.s)}")
         return clips
 
     def analyze(self, ref: str, confirm: Callable[[CostEstimate], bool] | None = None,
@@ -280,7 +324,7 @@ class Pipeline:
         """confirm wird vor kostenpflichtigen Schritten mit der Schätzung aufgerufen; False bricht ab."""
         proj = self.open(ref, section)
         if confirm and self.s.transcription_backend != "local" and not proj.done("transcribe"):
-            if not confirm(estimate_cost(self.s, proj.media["duration"])):
+            if not confirm(self._with_budget(estimate_cost(self.s, proj.media["duration"]))):
                 raise Cancelled()
         self.transcribe(proj)
         self.facecam(proj)
@@ -419,7 +463,8 @@ class Pipeline:
             subtitle_style=style, loudnorm=extra_on(clip, s, "loudnorm"), trim_silence=s.trim_silence,
             watermark=s.watermark if extra_on(clip, s, "watermark") else "", watermark_pos=s.watermark_pos,
             watermark_opacity=s.watermark_opacity, intro=s.intro if io else "", outro=s.outro if io else "",
-            track_face=s.track_face, smart_crop=s.smart_crop, cam_size=cam_size(clip, s))
+            track_face=s.track_face, smart_crop=s.smart_crop, cam_size=cam_size(clip, s),
+            hook=clip.hook if extra_on(clip, s, "hook") else "")
 
     def export(self, proj: Project, clips: list[Clip] | None = None, only_approved: bool = False) -> list[Path]:
         all_clips = proj.load_clips()
@@ -442,6 +487,15 @@ class Pipeline:
                 "export", ((k - 1) + f) / len(todo), f"Exportiere {l}"), cancel=self.cancel,
                 ffmpeg_path=self.s.ffmpeg_path, media=proj.media)
             render.write_metadata(clip, out)
+            if self.s.cover_image:  # Thumbnail: schärfstes Bild um den Moment, im Layout, mit Hook-Text
+                try:
+                    st = SubtitleStyle.from_dict(self.s.subtitles)
+                    render.preview_frame(src.path, render.cover_time(src.path, clip), job.layout, cam, proj.media,
+                                         out.with_name(out.stem + "_thumbnail.jpg"), self.s.ffmpeg_path,
+                                         subtitle_style=st, cam_size=job.cam_size,
+                                         hook=clip.hook or clip.title, hook_mode="cover")
+                except Exception as e:  # Thumbnail ist Zugabe: Export nie daran scheitern lassen
+                    log.warning("Thumbnail für %s nicht erstellt: %s", clip.id, e)
             clip.status, clip.export_path = STATUS_EXPORTED, str(out)
             results.append(out)
             proj.update_clip(clip.id, status=STATUS_EXPORTED, export_path=str(out))

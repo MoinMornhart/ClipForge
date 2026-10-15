@@ -254,6 +254,30 @@ class SettingsPage(QWidget):
         self.min_score = QSpinBox(minimum=0, maximum=10, value=self.s.min_score)
         self.min_score.setSpecialValueText("aus")
         f.addRow("Clips unter Score automatisch verwerfen", self.min_score)
+        # Ausgabenlimit für bezahlte Anbieter
+        from clipforge.core import budget
+
+        bl = QHBoxLayout()
+        self.budget = QDoubleSpinBox(minimum=0, maximum=100000, decimals=0, value=self.s.budget_eur, suffix=" €")
+        self.budget.setSpecialValueText("kein Limit")
+        self.budget.setToolTip("Bezahlte KI-Bewertung und Transkription stoppen, sobald so viel ausgegeben ist. "
+                               "Lokale und kostenlose Anbieter zählen nicht.")
+        self.budget_period = QComboBox()
+        self.budget_period.addItem("pro Monat", "monat")
+        self.budget_period.addItem("insgesamt", "gesamt")
+        self.budget_period.setCurrentIndex(max(0, self.budget_period.findData(self.s.budget_period)))
+        self.usd_rate = QDoubleSpinBox(minimum=0.5, maximum=1.5, decimals=2, singleStep=0.01, value=self.s.usd_to_eur)
+        self.usd_rate.setToolTip("Umrechnung 1 US-$ = … € (die Anbieter rechnen in Dollar)")
+        bl.addWidget(self.budget)
+        bl.addWidget(self.budget_period)
+        bl.addWidget(QLabel("1 $ ="))
+        bl.addWidget(self.usd_rate)
+        bl.addWidget(QLabel("€"))
+        bl.addStretch(1)
+        f.addRow("Ausgabenlimit", bl)
+        self.budget_state = QLabel(budget.status_text(self.s))
+        self.budget_state.setObjectName("muted")
+        f.addRow("", self.budget_state)
         self.model.currentTextChanged.connect(self._update_price)
         self._provider_changed(init=True)
         return w
@@ -438,6 +462,31 @@ class SettingsPage(QWidget):
         hint = QLabel("Der kleinste Wert begrenzt alle Clips, damit sie überall hochgeladen werden können.")
         hint.setObjectName("muted")
         f.addRow("", hint)
+        from clipforge.pipeline.llm import CLIP_STYLES
+
+        self.style_boxes = {}
+        sb = QWidget()
+        sl = QVBoxLayout(sb)
+        sl.setContentsMargins(0, 0, 0, 0)
+        for key, (label, desc) in CLIP_STYLES.items():
+            cb = QCheckBox(label)
+            cb.setToolTip(desc)
+            cb.setChecked(key in self.s.clip_styles)
+            self.style_boxes[key] = cb
+            sl.addWidget(cb)
+        f.addRow("Bevorzugte Clip-Arten", sb)
+        sh = QLabel("Die KI bewertet diese Arten bei gleicher Stärke höher. Alle angehakt = ausgewogen.")
+        sh.setObjectName("muted")
+        sh.setWordWrap(True)
+        f.addRow("", sh)
+        self.hook_on = QCheckBox("Hook-Text in den ersten 3 Sekunden einblenden")
+        self.hook_on.setToolTip("2–6 Wörter von der KI, die neugierig machen – pro Clip im Editor änderbar")
+        self.hook_on.setChecked(self.s.hook_text)
+        f.addRow(self.hook_on)
+        self.cover_on = QCheckBox("Thumbnail-Bild je Clip erzeugen (…_thumbnail.jpg)")
+        self.cover_on.setToolTip("Schärfstes Bild um den Moment, im Layout des Clips, mit großem Hook-Text")
+        self.cover_on.setChecked(self.s.cover_image)
+        f.addRow(self.cover_on)
         return w
 
     # ------------------------------------------------------------------ Untertitel
@@ -497,7 +546,10 @@ class SettingsPage(QWidget):
         self._fill_profiles()
         fresh = Settings.load()  # Exportordner kann unter Clips → „Ordner …“ geändert worden sein
         self.export_dir.setText(fresh.export_dir)
-        self.download_dir.setText(fresh.download_dir)  # Profile können inzwischen im Facecam-Dialog angelegt worden sein
+        self.download_dir.setText(fresh.download_dir)
+        from clipforge.core import budget
+
+        self.budget_state.setText(budget.status_text(fresh))  # Profile können inzwischen im Facecam-Dialog angelegt worden sein
 
     def _fill_profiles(self):
         profs = Settings.load().facecam_profiles
@@ -694,6 +746,8 @@ class SettingsPage(QWidget):
         s.llm_effort = self.effort.currentData()
         s.context_before, s.context_after = float(self.ctx_before.value()), float(self.ctx_after.value())
         s.min_score = self.min_score.value()
+        s.budget_eur, s.budget_period = float(self.budget.value()), self.budget_period.currentData()
+        s.usd_to_eur = float(self.usd_rate.value())
         if self.price_in.value() or self.price_out.value():
             s.price_overrides[s.llm_model] = [self.price_in.value(), self.price_out.value()]
         else:
@@ -723,6 +777,8 @@ class SettingsPage(QWidget):
         s.filename_pattern = self.pattern.text().strip() or "{date}_{streamer}_{title}"
         s.default_layout = self.layout_def.currentData()
         s.cam_size = self.cam_size.value()
+        s.clip_styles = [k for k, cb in self.style_boxes.items() if cb.isChecked()]
+        s.hook_text, s.cover_image = self.hook_on.isChecked(), self.cover_on.isChecked()
         s.codec, s.export_fps = self.codec.currentData(), self.fps.currentData()
         s.use_nvenc, s.loudnorm, s.trim_silence = self.nvenc.isChecked(), self.loud.isChecked(), self.trim.isChecked()
         s.smart_crop, s.track_face = self.smart.isChecked(), self.track.isChecked()

@@ -421,6 +421,7 @@ class ClipsPage(QWidget):
         ext.addWidget(QLabel("Im Clip:"))
         self.extra_boxes: dict[str, QCheckBox] = {}
         for key, label, tip in (("subtitles", "Untertitel", "Untertitel in diesen Clip einbrennen"),
+                                ("hook", "Hook-Text", "Hook-Text in den ersten 3 Sekunden groß einblenden"),
                                 ("watermark", "Wasserzeichen", "Wasserzeichen-Bild einblenden"),
                                 ("intro_outro", "Intro/Outro", "Intro- und Outro-Video anhängen"),
                                 ("loudnorm", "Lautstärke angleichen", "Ton auf -14 LUFS angleichen")):
@@ -480,6 +481,10 @@ class ClipsPage(QWidget):
         self.tags_edit = QLineEdit()
         self.tags_edit.setPlaceholderText("#gaming #fail …")
         self.tags_edit.textEdited.connect(self._edited)
+        self.hook_edit = QLineEdit()
+        self.hook_edit.setPlaceholderText("2–6 Wörter, die neugierig machen – erscheinen oben in den ersten Sekunden")
+        self.hook_edit.setMaxLength(60)
+        self.hook_edit.textEdited.connect(self._edited)
         self.reason = QLabel("")
         self.reason.setTextFormat(Qt.PlainText)
         self.reason.setWordWrap(True)
@@ -487,6 +492,7 @@ class ClipsPage(QWidget):
         left_form.addRow("Titel", self.title_edit)
         left_form.addRow("Beschreibung", self.desc_edit)
         left_form.addRow("Hashtags", self.tags_edit)
+        left_form.addRow("Hook-Text", self.hook_edit)
         left_form.addRow("Grund", self.reason)
         self.edit_tabs.addTab(details, "Titel && Hashtags")
         subs = QWidget()
@@ -713,7 +719,8 @@ class ClipsPage(QWidget):
             self._enable_editor(False)
 
     def _enable_editor(self, on: bool):
-        for w in (self.title_edit, self.desc_edit, self.tags_edit, self.transcript, self.approve_btn, self.reject_btn,
+        for w in (self.title_edit, self.desc_edit, self.tags_edit, self.hook_edit, self.transcript, self.approve_btn,
+                  self.reject_btn,
                   self.layout_box, self.play_btn, self.range, *self.nudge_btns):
             w.setEnabled(on)
         self.preview_btn.setEnabled(on and not self._previewing)
@@ -736,6 +743,8 @@ class ClipsPage(QWidget):
         self.title_edit.setText(c.title)
         self.desc_edit.setPlainText(c.description)
         self.tags_edit.setText(" ".join(c.hashtags))
+        self.hook_edit.setText(c.hook)
+        self.hook_edit.setCursorPosition(0)
         self.title_edit.setCursorPosition(0)
         self.tags_edit.setCursorPosition(0)
         self.reason.setText("; ".join(c.reasons) + (f"\nKI: {c.ai_reason}" if c.ai_reason else ""))
@@ -774,7 +783,8 @@ class ClipsPage(QWidget):
         self.cur.extras = {**(self.cur.extras or {}), key: on}
         self._save_timer.start()
         self._pv916_timer.start()
-        names = {"subtitles": "Untertitel", "watermark": "Wasserzeichen", "intro_outro": "Intro/Outro",
+        names = {"subtitles": "Untertitel", "hook": "Hook-Text", "watermark": "Wasserzeichen",
+                 "intro_outro": "Intro/Outro",
                  "loudnorm": "Lautstärke angleichen"}
         self.status_message.emit(f"{names[key]} für diesen Clip {'an' if on else 'aus'}.")
 
@@ -821,8 +831,9 @@ class ClipsPage(QWidget):
             at = round(min(words, key=lambda w: abs(w.s - at)).s + 0.1, 2)
         style = SubtitleStyle.from_dict(self.s.subtitles)
         style.enabled = extra_on(c, self.s, "subtitles")
+        hook = c.hook if extra_on(c, self.s, "hook") else ""
         key = hashlib.sha1(json.dumps([layout, at, proj.state.get("facecam"), style.enabled, self.s.subtitles,
-                                       c.edited_words, size], sort_keys=True, default=str).encode()).hexdigest()[:12]
+                                       c.edited_words, size, hook], sort_keys=True, default=str).encode()).hexdigest()[:12]
         out = proj.dir / "pv916" / f"{key}.png"
         self._pv916_key = key
         if out.exists():
@@ -833,7 +844,7 @@ class ClipsPage(QWidget):
 
         def job(progress, cancel, confirm):
             return render.preview_frame(proj.source.path, at, layout, cam, media, out, words=words,
-                                        subtitle_style=style, cam_size=size)
+                                        subtitle_style=style, cam_size=size, hook=hook)
 
         t = Task(job)
         self._pv916_task = t
@@ -903,6 +914,7 @@ class ClipsPage(QWidget):
         c.description = self.desc_edit.toPlainText().strip()
         c.hashtags = [t if t.startswith("#") else f"#{t}" for t in self.tags_edit.text().split() if t.strip("#")]
         c.layout = self.layout_box.currentData()
+        c.hook = " ".join(self.hook_edit.text().split())
         self._save_timer.start()
         self._pv916_timer.start()
 

@@ -26,6 +26,19 @@ log = get_logger("llm")
 _FALLBACK_MODELS = {"claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"}
 _EFFORT_MODELS = re.compile(r"^claude-(opus|sonnet|haiku|fable|mythos)-(5|4-[678])")
 
+# Clip-Arten, die der Nutzer bevorzugen kann (Schlüssel → Anzeigename, Beschreibung für die KI)
+CLIP_STYLES: dict[str, tuple[str, str]] = {
+    "lustig": ("Lustig", "Pointe, Situationskomik, unerwartete oder absurde Reaktion"),
+    "ragebait": ("Ragebait", "Momente, die zum Kommentieren reizen: steile These, Ausraster/Rage, unfaire "
+                             "Situation, offensichtlicher Fehler, Streit oder Trashtalk – polarisierend, aber ohne "
+                             "Menschen oder Gruppen herabzuwürdigen"),
+    "rp": ("RP / Story", "Rollenspiel-Szenen (z. B. GTA RP): In-Character-Dialoge, Improvisation, absurde "
+                         "Situationen und ihre Folgen; brauchen oft ein, zwei Sätze Vorlauf, damit man sie versteht"),
+    "skill": ("Skill / Clutch", "Clutch, knapper Sieg, spektakulärer Spielzug"),
+    "fail": ("Fails", "Missgeschick, Pech, peinlicher Fehler, Plan geht schief"),
+    "emotional": ("Emotional", "echte Freude, Schock, Wut oder Rührung"),
+}
+
 SYSTEM_PROMPT = """Du bist erfahrener Cutter für Kurzvideos (TikTok, YouTube Shorts, Instagram Reels) und \
 wählst Momente aus Twitch-Streams aus.
 
@@ -35,17 +48,25 @@ Ein Sprachbefehl wie „clip das“ bezieht sich fast immer auf das, was kurz VO
 
 Deine Aufgaben:
 1. Entscheide, ob hier ein Moment steckt, der als eigenständiger Kurzclip funktioniert.
-2. Wähle Start- und Endzeile so, dass der Clip ohne Vorwissen verständlich ist: Er beginnt dort, wo die \
-Situation sich aufbaut (nicht mitten im Satz und nicht unnötig früh), und endet kurz nach der Pointe bzw. \
-Reaktion. Den Sprachbefehl selbst („clip das“) lässt du am Ende weg, wenn danach nichts Wichtiges mehr kommt.
+2. Wähle Start- und Endzeile. Ein Kurzclip muss in den ersten 1–2 Sekunden fesseln, sonst wird \
+weggewischt: Beginne so spät wie möglich und so früh wie nötig – mitten in der Spannung, nicht beim Aufbau, kein \
+Begrüßen, kein Leerlauf. Der Clip muss trotzdem ohne Vorwissen verständlich sein und endet kurz nach der Pointe \
+bzw. Reaktion (ideal 15–40 Sekunden; länger nur, wenn die Geschichte es braucht). Den Sprachbefehl selbst \
+(„clip das“) lässt du am Ende weg, wenn danach nichts Wichtiges mehr kommt.
 3. Bewerte das Viralpotenzial von 1 bis 10. Sei streng und nutze die ganze Skala: Die meisten Stellen in \
 einem Stream sind 3–5. 1–2 = nichts passiert, 3–4 = normales Gespräch, 5–6 = ganz nett, 7 = gut, \
 8–9 = sehr stark (überraschend, lustig, emotional oder spektakulär, auch ohne Vorwissen), 10 = außergewöhnlich. \
-Viele Chat-Nachrichten oder Lautstärke allein machen noch keinen guten Clip – entscheidend ist, was passiert.
-4. Schreibe einen kurzen, neugierig machenden Titel (max. 60 Zeichen) über den INHALT des Moments. Nenne nie \
-den Auslöser (keine „Chat-Spitze“, keine Nachrichtenzahlen, kein „Clip“). Dazu eine Beschreibung (1–2 Sätze) \
-und 3–8 passende Hashtags als Liste, jeder ohne Leerzeichen. Alles in der Sprache des Streams.
-5. Begründe deine Bewertung in einem Satz.
+Viele Chat-Nachrichten oder Lautstärke allein machen noch keinen guten Clip – entscheidend ist, was passiert. \
+Bewerte vor allem: Wie stark ist der Einstieg? Versteht man es ohne Vorwissen? Gibt es eine klare Pointe? Würde man \
+es nochmal ansehen, teilen oder kommentieren?
+4. Schreibe einen kurzen, neugierig machenden Titel (max. 60 Zeichen) über den INHALT des Moments, konkret \
+statt allgemein, höchstens ein Emoji. Nenne nie den Auslöser (keine „Chat-Spitze“, keine Nachrichtenzahlen, kein \
+„Clip“). Dazu eine Beschreibung (1–2 Sätze) und 5–10 Hashtags als Liste, jeder ohne Leerzeichen: gemischt aus \
+speziellen (Spiel, Situation) und allgemeinen (z. B. gaming, fyp, streamer). Alles in der Sprache des Streams.
+5. Schreibe einen Hook-Text mit 2–6 Wörtern, der in den ersten Sekunden groß eingeblendet wird und auf dem \
+Thumbnail steht. Er macht neugierig, verrät die Pointe nicht und verspricht nichts, was der Clip nicht hält.
+6. Ordne den Clip einer Art zu (category).
+7. Begründe deine Bewertung in einem Satz.
 
 Das Transkript ist automatisch erstellt und kann Fehler enthalten. Schreibe Titel und Beschreibung trotzdem \
 korrekt."""
@@ -60,9 +81,12 @@ RESULT_SCHEMA = {
         "title": {"type": "string"},
         "description": {"type": "string"},
         "hashtags": {"type": "array", "items": {"type": "string"}},
+        "hook": {"type": "string"},
+        "category": {"type": "string", "enum": [*CLIP_STYLES, "sonstiges"]},
         "reason": {"type": "string"},
     },
-    "required": ["is_highlight", "start_line", "end_line", "score", "title", "description", "hashtags", "reason"],
+    "required": ["is_highlight", "start_line", "end_line", "score", "title", "description", "hashtags", "hook",
+                 "category", "reason"],
     "additionalProperties": False,
 }
 
@@ -112,14 +136,41 @@ def format_lines(lines: list[Line]) -> str:
     return "\n".join(f"L{l.idx} [{l.s:.1f}–{l.e:.1f}] {l.text}" for l in lines)
 
 
+def style_hint(s: Settings) -> str:
+    """Welche Clip-Arten der Nutzer bevorzugt – als Hinweis für die Bewertung."""
+    chosen = [k for k in s.clip_styles if k in CLIP_STYLES]
+    if not chosen or len(chosen) == len(CLIP_STYLES):
+        return "Alle Arten von Momenten sind willkommen."
+    want = "; ".join(f"{CLIP_STYLES[k][0]}: {CLIP_STYLES[k][1]}" for k in chosen)
+    return (f"Bevorzugte Arten von Momenten (bei vergleichbarer Stärke höher bewerten): {want}. "
+            "Andere Arten nur hoch bewerten, wenn sie herausragend sind.")
+
+
 def build_prompt(clip: Clip, lines: list[Line], s: Settings) -> str:
     return (
         f"Grund für diese Stelle: {'; '.join(clip.reasons)}\n"
+        f"{style_hint(s)}\n"
         f"Zeitpunkt des Triggers: {clip.trigger_time:.1f} s\n"
         f"Ziel-Länge des Clips: {s.min_clip_seconds:.0f}–{s.effective_max_seconds:.0f} Sekunden.\n\n"
         f"Transkript:\n{format_lines(lines)}\n\n"
         "Antworte ausschließlich mit dem JSON-Objekt (start_line/end_line sind die Zeilennummern ohne „L“)."
     )
+
+
+def budget_note(s: Settings, est: "CostEstimate") -> str:
+    """Hinweis zur Kostenschätzung, wie viel vom Ausgabenlimit übrig ist."""
+    from clipforge.core import budget
+
+    rem = budget.remaining_usd(s)
+    if rem is None:
+        return ""
+    eur = s.usd_to_eur
+    if rem <= 0:
+        return "Ausgabenlimit erreicht – bezahlte Schritte werden übersprungen."
+    if est.total_high > rem:
+        return (f"Achtung: nur noch {rem * eur:.2f} € im Ausgabenlimit – die Bewertung stoppt, sobald es "
+                "aufgebraucht ist.").replace(".", ",", 1)
+    return f"Im Ausgabenlimit übrig: {rem * eur:.2f} €".replace(".", ",")
 
 
 def estimate_tokens(text: str) -> int:
@@ -452,6 +503,9 @@ def apply_result(clip: Clip, r: dict, lines: list[Line], s: Settings, duration: 
     clip.description = str(r.get("description") or "").strip()
     clip.hashtags = _hashtags(r.get("hashtags") or [])
     clip.ai_reason = str(r.get("reason") or "").strip()
+    clip.hook = " ".join(str(r.get("hook") or "").split()[:8])[:60]
+    cat = str(r.get("category") or "").strip().lower()
+    clip.category = cat if cat in CLIP_STYLES else ("sonstiges" if cat else "")
     if not r.get("is_highlight", True):
         clip.score = min(clip.score, 3.0)
 

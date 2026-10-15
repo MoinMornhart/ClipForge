@@ -124,6 +124,46 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return header + "\n".join(lines) + "\n"
 
 
+def _wrap(text: str, max_chars: int) -> list[str]:
+    lines, cur = [], ""
+    for w in text.split():
+        if cur and len(cur) + 1 + len(w) > max_chars:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = f"{cur} {w}".strip()
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def build_hook_ass(text: str, style: SubtitleStyle, mode: str = "hook", duration: float = 3.0,
+                   top: int | None = None) -> str:
+    """Großer Text oben: „hook“ = in den ersten Sekunden des Clips (mit Ein-/Ausblenden),
+    „cover“ = Thumbnail-Text, größer und weiter in der Bildmitte (Shorts schneiden im Feed oben/unten ab)."""
+    st = style
+    size, margin, chars = (118, 560, 13) if mode == "cover" else (84, 150, 18)
+    if top is not None:  # z. B. Übergang Facecam → Gameplay, damit der Text kein Gesicht verdeckt
+        margin = top
+    body = r"\N".join(_clean(x) for x in _wrap(text.upper(), chars))
+    fade = "" if mode == "cover" else r"{\fad(120,300)}"
+    return f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Hook,{st.font},{size},{_ass_color('#FFFFFF')},{_ass_color(st.highlight)},{_ass_color('#000000')},{_ass_color('#000000', 0x40)},-1,0,0,0,100,100,0,0,1,{9 if mode == "cover" else 7},4,8,50,50,{margin},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 1,{_ts(0)},{_ts(duration)},Hook,,0,0,0,,{fade}{{\c{_ass_color(st.highlight)}}}{body}
+"""
+
+
 # --------------------------------------------------------------------------- Schriften
 
 

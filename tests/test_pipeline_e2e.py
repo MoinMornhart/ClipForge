@@ -77,6 +77,8 @@ def test_full_pipeline(video, tmp_path):
     assert (v["width"], v["height"]) == (1080, 1920)
     assert any(st["codec_type"] == "audio" for st in info["streams"])
     assert outs[0].with_suffix(".txt").exists()
+    thumb = outs[0].with_name(outs[0].stem + "_thumbnail.jpg")
+    assert thumb.exists() and thumb.stat().st_size > 10_000  # Thumbnail je Clip
     assert any(x.status == STATUS_EXPORTED and x.export_path == str(outs[0]) for x in proj.load_clips())
 
 

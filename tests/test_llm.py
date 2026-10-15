@@ -111,3 +111,33 @@ def test_nvidia_provider_is_free_and_openai_compatible():
     assert p.kind == "openai_compat" and p.base_url == "https://integrate.api.nvidia.com/v1" and p.needs_key
     assert p.default_model in p.models
     assert llm_price(p.default_model, provider="nvidia").input_per_m == 0
+
+
+def test_style_hint_and_new_fields():
+    from clipforge.core.settings import Settings
+    from clipforge.pipeline import llm
+    from clipforge.pipeline.clips import Clip
+
+    s = Settings()
+    assert "Alle Arten" in llm.style_hint(s)
+    s.clip_styles = ["ragebait", "rp"]
+    h = llm.style_hint(s)
+    assert "Ragebait" in h and "RP" in h and "Lustig" not in h
+    assert {"hook", "category"} <= set(llm.RESULT_SCHEMA["required"])
+    lines = [llm.Line(i, i * 5.0, i * 5.0 + 4.5, f"Satz {i}.") for i in range(10)]
+    c = Clip(0, 50, 30, ["Lautstärkespitze"])
+    llm.apply_result(c, {"start_line": 1, "end_line": 7, "score": 8, "title": "T", "hook": "  Er sah es  nicht kommen ",
+                         "category": "RAGEBAIT", "hashtags": ["#a"]}, lines, s, 60)
+    assert c.hook == "Er sah es nicht kommen" and c.category == "ragebait"
+    llm.apply_result(c, {"start_line": 1, "end_line": 7, "score": 8, "category": "quatsch"}, lines, s, 60)
+    assert c.category == "sonstiges" and c.hook == ""
+
+
+def test_hook_ass_wraps_and_escapes():
+    from clipforge.pipeline.subtitles import SubtitleStyle, build_hook_ass
+
+    a = build_hook_ass("Er hat {es} nicht kommen sehen", SubtitleStyle(), "cover")
+    line = [l for l in a.splitlines() if l.startswith("Dialogue")][0]
+    assert r"\N" in line and "{ES}" not in line  # umbrochen, Klammern entschärft
+    assert "fad" not in line  # Thumbnail ohne Einblenden
+    assert "fad" in build_hook_ass("Kurz", SubtitleStyle(), "hook")

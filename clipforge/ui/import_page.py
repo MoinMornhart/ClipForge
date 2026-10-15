@@ -231,7 +231,10 @@ class ImportPage(QWidget):
     def refresh_recent(self):
         self.recent.clear()
         total, n = Project.total_cost_all()
-        self.total_cost.setText(f"API-Kosten gesamt: {total:.2f} $ für {n} VOD(s)".replace(".", ","))
+        from clipforge.core import budget
+
+        self.total_cost.setText(budget.status_text(Settings.load()) + f" · gesamt {total:.2f} $ für {n} VOD(s)"
+                                .replace(".", ","))
         missing = []
         projects = [p for p in Project.all() if p.source][:24]
         if not projects:
