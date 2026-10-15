@@ -249,6 +249,7 @@ Unter **Einstellungen → Clips → Bevorzugte Clip-Arten** legst du fest, was d
 |---|---|
 | **Facecam oben**, Gameplay unten | Standard für Gaming-Clips (automatisch, wenn eine Facecam erkannt wurde) |
 | **Gameplay mit Cam-Ecke** | wenn das Spiel im Fokus steht |
+| **Gameplay groß, Facecam oben drüber** | Spiel bildfüllend wie bei der Ecke, Facecam oben mittig darüber (Größe per Regler) |
 | **Nur Facecam** | Talk- und Reaktionsmomente (automatisch bei reinen Kamera-Streams) |
 | **Unscharfer Hintergrund** | alles sichtbar (automatisch ohne Facecam) |
 | **Zuschnitt** | Vollbild-Gameplay |

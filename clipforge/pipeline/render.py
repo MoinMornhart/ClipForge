@@ -104,12 +104,13 @@ def plan(job: RenderJob, media: dict, work: Path) -> tuple[str, str]:
     # Kamerabereich oben so hoch, dass die ganze Cam zu sehen ist (statt eines festen, breiten Streifens)
     hi = layouts._even(H * min(50, max(25, job.cam_size)) / 100)
     lo = min(layouts.PANEL_MIN, hi)
+    li.cam_box = (layouts._even(W * 0.62), hi)  # Layout „top“: Facecam-Größe über den gleichen Regler
     if layout == "stack" and li.cam:
         li.stack_top = layouts.panel_height(li.cam, lo, hi)
     elif layout == "hand" and li.hand:
         li.stack_top = layouts.panel_height(li.hand, lo, hi)
     content = cam_info.content if cam_info else None
-    if job.smart_crop and layout in ("crop", "stack", "corner", "blur", "hand", "face_hand"):
+    if job.smart_crop and layout in ("crop", "stack", "corner", "top", "blur", "hand", "face_hand"):
         try:
             content = fc.clip_letterbox(job.src, clip.start, clip.end) or content
         except Exception as e:
@@ -119,7 +120,7 @@ def plan(job: RenderJob, media: dict, work: Path) -> tuple[str, str]:
         li.content_h = int((content[1] - content[0]) * sh)
     ch = li.content_h or sh
 
-    if layout in ("crop", "stack", "corner", "hand", "face_hand") and job.smart_crop:
+    if layout in ("crop", "stack", "corner", "top", "hand", "face_hand") and job.smart_crop:
         out_h = {"stack": H - li.stack_top, "hand": H - li.stack_top,
                  "face_hand": H - sum(li.face_hand_rows)}.get(layout, H)
         gw = layouts.gameplay_width(ch, W, out_h)
@@ -207,7 +208,11 @@ def preview_frame(src: Path, at: float, layout: str, cam: fc.Facecam | None, med
         if hook.strip():
             hs = subtitle_style or SubtitleStyle()
             top = None
-            if hook_mode == "cover" and resolved in ("stack", "hand", "face_hand") and cam:
+            if hook_mode == "cover" and resolved == "top" and cam and cam.cam:
+                hi = layouts._even(H * min(50, max(25, cam_size)) / 100)
+                r = fc.Rect.from_norm(cam.cam, media["width"], media["height"])
+                top = int(48 + min(W * 0.62 / r.w, hi / r.h) * r.h) + 30  # direkt unter der Facecam
+            elif hook_mode == "cover" and resolved in ("stack", "hand", "face_hand") and cam:
                 # Thumbnail-Text in den Übergang Kamera → Gameplay statt aufs Gesicht
                 r = cam.cam if resolved == "stack" else cam.handcam
                 if resolved == "face_hand":

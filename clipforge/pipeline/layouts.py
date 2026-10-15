@@ -16,6 +16,7 @@ LAYOUTS = {
     "auto": "Automatisch (nach Facecam)",
     "stack": "Facecam oben, Gameplay unten",
     "corner": "Gameplay mit Facecam-Ecke",
+    "top": "Gameplay groß, Facecam oben drüber",
     "cam": "Nur Facecam",
     "hand": "Handcam oben, Gameplay unten",
     "face_hand": "Facecam + Handcam + Gameplay",
@@ -23,7 +24,7 @@ LAYOUTS = {
     "blur": "Gameplay mittig, unscharfer Hintergrund",
     "crop": "Gameplay zugeschnitten (Vollbild)",
 }
-NEEDS_CAM = {"stack", "corner", "cam"}
+NEEDS_CAM = {"stack", "corner", "cam", "top"}
 NEEDS_HAND = {"hand", "face_hand", "hand_only"}
 
 
@@ -45,6 +46,7 @@ class LayoutInput:
     content_y: int = 0  # Bildbereich ohne schwarze Balken (Kinoformat)
     content_h: int | None = None
     corner_width: int = 440
+    cam_box: tuple[int, int] = (670, 768)  # Layout „top“: Facecam höchstens so breit × hoch (oben mittig)
     accent: str = "0x9146FF"
 
 
@@ -218,6 +220,22 @@ def build(layout: str, li: LayoutInput) -> str:
             f"[b]crop={_even(c.w)}:{_even(c.h)}:{_even(c.x)}:{_even(c.y)},scale={cw}:{ch}:flags=lanczos,"
             f"pad={cw + 12}:{ch + 12}:6:6:color={li.accent},setsar=1[cam];"
             f"[bg][cam]overlay=36:170,{tail}"
+        )
+
+    if layout == "top":
+        # Gameplay füllt das ganze Bild (wie bei der Ecke), die Facecam sitzt oben mittig darüber
+        gcrop = _gameplay_crop(sw, sh, cy, H, gx)
+        c = li.cam
+        bw, bh = li.cam_box
+        k = min(bw / c.w, bh / c.h)
+        cw, ch = _even(c.w * k), _even(c.h * k)
+        return (
+            f"[0:v]split=2[a][b];"
+            f"[a]{gcrop},scale={W}:{H}:flags=lanczos{_sharpen(H / sh)},setsar=1[bg];"
+            f"[b]crop={_even(c.w)}:{_even(c.h)}:{_even(c.x) if c.x >= 2 else 0}:{_even(c.y) if c.y >= 2 else 0},"
+            f"scale={cw}:{ch}:flags=lanczos{_sharpen(k)},"
+            f"pad={cw + 12}:{ch + 12}:6:6:color={li.accent},setsar=1[cam];"
+            f"[bg][cam]overlay=(W-w)/2:48,{tail}"
         )
 
     if layout == "cam":
