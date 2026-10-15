@@ -102,3 +102,12 @@ def test_estimate_known_and_unknown_price():
     assert estimate_cost(s3, 3600).llm_high_usd == 0
     s4 = Settings(transcription_backend="openai")
     assert abs(estimate_cost(s4, 3600).stt_usd - 0.36) < 1e-9
+
+
+def test_nvidia_provider_is_free_and_openai_compatible():
+    from clipforge.core.providers import LLM_PROVIDERS, llm_price
+
+    p = LLM_PROVIDERS["nvidia"]
+    assert p.kind == "openai_compat" and p.base_url == "https://integrate.api.nvidia.com/v1" and p.needs_key
+    assert p.default_model in p.models
+    assert llm_price(p.default_model, provider="nvidia").input_per_m == 0

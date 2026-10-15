@@ -56,11 +56,13 @@ class RenderJob:
 def encoder_args(codec: str, nvenc: bool) -> list[str]:
     if nvenc:
         enc = "hevc_nvenc" if codec == "hevc" else "h264_nvenc"
-        args = ["-c:v", enc, "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", "21", "-b:v", "0",
-                "-maxrate", "16M", "-bufsize", "32M"]
+        # p6 + Lookahead + räumliche AQ: sichtbar sauberer bei schnellen Spielszenen; Plattformen kodieren
+        # ohnehin neu, je besser das Ausgangsmaterial, desto weniger Matsch danach
+        args = ["-c:v", enc, "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", "18", "-b:v", "0",
+                "-maxrate", "24M", "-bufsize", "48M", "-spatial-aq", "1", "-rc-lookahead", "32", "-bf", "3"]
     else:
         enc = "libx265" if codec == "hevc" else "libx264"
-        args = ["-c:v", enc, "-preset", "medium", "-crf", "20"]
+        args = ["-c:v", enc, "-preset", "slow", "-crf", "18"]
     if codec == "hevc":
         args += ["-tag:v", "hvc1"]
     return args

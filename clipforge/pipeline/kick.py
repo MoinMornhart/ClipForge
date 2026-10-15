@@ -113,8 +113,8 @@ def resolve(url: str) -> KickVod:
                          "Ist das VOD privat oder nur für Abonnenten? Dann die Datei herunterladen und hineinziehen.")
 
 
-def best_variant(master_url: str, master_text: str, max_height: int = 1080) -> str:
-    """Wählt aus der master.m3u8 die beste Qualität bis max_height."""
+def best_variant(master_url: str, master_text: str, max_height: int | None = None) -> str:
+    """Wählt aus der master.m3u8 die beste Qualität (optional höchstens max_height)."""
     from urllib.parse import urljoin
 
     best, best_key = None, (-1, -1)
@@ -125,7 +125,7 @@ def best_variant(master_url: str, master_text: str, max_height: int = 1080) -> s
         res = re.search(r"RESOLUTION=\d+x(\d+)", line)
         bw = re.search(r"BANDWIDTH=(\d+)", line)
         h = int(res.group(1)) if res else 0
-        key = (h if h <= max_height else -h, int(bw.group(1)) if bw else 0)
+        key = (h if max_height is None or h <= max_height else -h, int(bw.group(1)) if bw else 0)
         nxt = next((x for x in lines[i + 1:] if x and not x.startswith("#")), None)
         if nxt and key > best_key:
             best, best_key = urljoin(master_url, nxt.strip()), key

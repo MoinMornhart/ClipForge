@@ -210,7 +210,7 @@ _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, lik
        "Chrome/131.0 Safari/537.36")
 
 
-def _download_kick(url: str, target: Path, on_progress, cancel, max_height: int,
+def _download_kick(url: str, target: Path, on_progress, cancel, max_height: int | None,
                    section: tuple[float, float] | None) -> Source:
     """Kick über den eigenen Weg: Videoseite → HLS-Stream → nur die nötigen Segmente.
     Funktioniert auch mit dem neuen Kick-Link-Format, das yt-dlp nicht kennt."""
@@ -242,7 +242,7 @@ def download(
     target_dir: str | Path,
     on_progress: Callable[[float, str], None] | None = None,
     cancel: threading.Event | None = None,
-    max_height: int = 1080,
+    max_height: int | None = None,  # None = beste verfügbare Qualität
     section: tuple[float, float] | None = None,
 ) -> Source:
     """Lädt ein VOD von Twitch, Kick, YouTube (oder jeder anderen von yt-dlp unterstützten Seite).
@@ -275,7 +275,10 @@ def download(
             on_progress(done / total if total else 0.0, msg)
 
     opts = {
-        "format": f"bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]/best",
+        # beste Qualität: höchste Auflösung, dann Bildrate, dann Bitrate
+        "format": (f"bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]/best" if max_height
+                   else "bestvideo*+bestaudio/best"),
+        "format_sort": ["res", "fps", "tbr"],
         "outtmpl": str(target / "%(uploader)s_%(upload_date)s_%(id)s.%(ext)s"),
         "merge_output_format": "mp4",
         "continuedl": True,

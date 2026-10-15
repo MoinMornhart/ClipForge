@@ -86,7 +86,7 @@ flowchart LR
 | **Import** | Twitch, Kick, YouTube und alles, was yt-dlp kann. Lokale MP4/MKV/MOV per Drag & Drop. Nur einen Ausschnitt laden (lädt gezielt nur die nötigen Videostücke, auch bei Stunde 8 schnell). |
 | **Transkription** | Lokal mit faster-whisper `large-v3-turbo` auf der NVIDIA-GPU, Sprache automatisch. Alternativ OpenAI- oder Groq-Whisper per API. |
 | **Trigger** | Sprachbefehle („clip das“, „clip it“, „das muss ein Clip werden“ …), eigene Begriffe mit unscharfer Erkennung, Chat-Spitzen bei Twitch und Kick, Lautstärkespitzen |
-| **KI** | 11 Anbieter (Claude, OpenAI, Gemini, Mistral, Groq, DeepSeek, xAI, OpenRouter, Ollama, LM Studio, eigener Server). Schnitt an Satzgrenzen, Score 1–10, Titel, Beschreibung, Hashtags |
+| **KI** | 12 Anbieter (Claude, OpenAI, Gemini, Mistral, Groq, DeepSeek, xAI, OpenRouter, NVIDIA NIM mit kostenlosem Key, Ollama, LM Studio, eigener Server). Schnitt an Satzgrenzen, Score 1–10, Titel, Beschreibung, Hashtags |
 | **Kosten** | Schätzung vor jeder Analyse **und** tatsächlich verbrauchtes API-Guthaben pro VOD |
 | **Facecam** | Automatisch erkannt, auch wenn das Spiel Gesichter zeigt **und auch ohne menschliches Gesicht** (Tier-Maskottchen wie ein Bär, VTuber, PNGtuber). Von Hand korrigierbar, als Profil pro Streamer gespeichert |
 | **Layouts** | Facecam oben, Cam-Ecke, nur Facecam, unscharfer Hintergrund, Zuschnitt, automatisch |
@@ -166,6 +166,7 @@ Du brauchst nur **einen** Anbieter. Lokal über Ollama oder LM Studio kostet die
 |---|:---:|---|
 | **Anthropic Claude** (Standard: `claude-opus-5-5`) | ✅ | offizielles SDK, strukturierte Antwort |
 | OpenAI · Google Gemini · Mistral · Groq · DeepSeek · xAI · OpenRouter | ✅ | OpenAI-kompatibel |
+| NVIDIA NIM ([build.nvidia.com](https://build.nvidia.com/settings/api-keys)) | ✅ kostenlos | OpenAI-kompatibel, Ratenlimit; Modelle z. B. Nemotron, Kimi, DeepSeek, GLM |
 | Ollama · LM Studio (lokal) | – | `localhost` |
 | Eigener Server | optional | beliebige OpenAI-kompatible URL |
 

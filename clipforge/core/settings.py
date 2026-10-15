@@ -84,7 +84,8 @@ class Settings:
     download_dir: str = field(default_factory=lambda: str(default_download_dir()))
     export_dir: str = field(default_factory=lambda: str(default_export_dir()))
     codec: str = "h264"  # "h264" | "hevc"
-    fps: int = 30
+    fps: int = 30  # alt, wird nicht mehr genutzt (siehe export_fps)
+    export_fps: int = 0  # 0 = wie die Quelle (höchstens 60), sonst 30/60
     use_nvenc: bool = True
     default_layout: str = "auto"  # auto | stack | corner | cam | blur | crop
     smart_crop: bool = True

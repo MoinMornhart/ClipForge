@@ -39,6 +39,12 @@ LLM_PROVIDERS: dict[str, Provider] = {p.id: p for p in [
     Provider("xai", "xAI Grok", "openai_compat", "https://api.x.ai/v1", key_url="https://console.x.ai"),
     Provider("openrouter", "OpenRouter (viele Modelle)", "openai_compat", "https://openrouter.ai/api/v1",
              key_url="https://openrouter.ai/keys"),
+    # NVIDIA NIM (build.nvidia.com): kostenlose Keys mit Ratenlimit, OpenAI-kompatibel
+    Provider("nvidia", "NVIDIA NIM (kostenloser Key)", "openai_compat", "https://integrate.api.nvidia.com/v1",
+             key_url="https://build.nvidia.com/settings/api-keys",
+             models=("nvidia/nemotron-3-super-120b-a12b", "moonshotai/kimi-k2.6", "deepseek-ai/deepseek-v4.1-flash",
+                     "z-ai/glm-5.3", "google/gemma-4-31b-it", "openai/gpt-oss-20b"),
+             default_model="nvidia/nemotron-3-super-120b-a12b"),
     Provider("ollama", "Ollama (lokal)", "openai_compat", "http://localhost:11434/v1", needs_key=False, local=True),
     Provider("lmstudio", "LM Studio (lokal)", "openai_compat", "http://localhost:1234/v1", needs_key=False,
              local=True),
@@ -86,6 +92,6 @@ def llm_price(model: str, overrides: dict[str, list[float]] | None = None, provi
     if overrides and model in overrides:
         i, o = overrides[model]
         return Price(float(i), float(o))
-    if provider in ("ollama", "lmstudio"):
+    if provider in ("ollama", "lmstudio", "nvidia"):  # lokal bzw. kostenloser NVIDIA-Key
         return Price(0.0, 0.0)
     return LLM_PRICES.get(model)

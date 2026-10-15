@@ -110,18 +110,29 @@ def panel_height(r: Rect, lo: int = PANEL_MIN, hi: int = PANEL_MAX) -> int:
     return _even(min(hi, max(lo, W * r.h / max(r.w, 1))))
 
 
+def _sharpen(factor: float) -> str:
+    """Leichtes Nachschärfen, wenn ein Bildteil stark vergrößert wird (kleine Facecam, 720p-Quelle) –
+    gegen den weichen, verwaschenen Look. Bei wenig Vergrößerung nichts tun (sonst Artefakte)."""
+    if factor >= 3:
+        return ",unsharp=5:5:0.9:5:5:0.0"
+    if factor >= 1.8:
+        return ",unsharp=5:5:0.6:5:5:0.0"
+    return ""
+
+
 def _fit_panel(r: Rect, w: int, h: int, tag: str) -> str:
     """Kamerafenster r KOMPLETT in w×h zeigen (nichts abgeschnitten): so groß wie möglich, die freien Ränder
     füllt eine unscharfe Kopie derselben Cam. Liefert eine Filterkette ohne Ein-/Ausgangslabel."""
     crop = f"crop={_even(r.w)}:{_even(r.h)}:{_even(r.x) if r.x >= 2 else 0}:{_even(r.y) if r.y >= 2 else 0}"
+    sharp = _sharpen(min(w / r.w, h / r.h))
     if abs((r.w / r.h) - (w / h)) / (w / h) < 0.03:  # passt praktisch genau
-        return f"{crop},scale={w}:{h}:flags=lanczos,setsar=1"
+        return f"{crop},scale={w}:{h}:flags=lanczos{sharp},setsar=1"
     bw, bh = _even(w / 4), _even(h / 4)
     return (f"{crop},split=2[{tag}b][{tag}f];"
             f"[{tag}b]scale={bw}:{bh}:force_original_aspect_ratio=increase,crop={bw}:{bh},boxblur=8:2,"
             f"scale={w}:{h},setsar=1[{tag}bb];"
-            f"[{tag}f]scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,"
-            f"setsar=1[{tag}ff];"
+            f"[{tag}f]scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos"
+            f"{sharp},setsar=1[{tag}ff];"
             f"[{tag}bb][{tag}ff]overlay=(W-w)/2:(H-h)/2")
 
 
@@ -147,7 +158,7 @@ def build(layout: str, li: LayoutInput) -> str:
     gx = li.gameplay_x
 
     if layout == "crop":
-        return f"[0:v]{_gameplay_crop(sw, sh, cy, H, gx)},scale={W}:{H}:flags=lanczos,setsar=1,{tail}"
+        return f"[0:v]{_gameplay_crop(sw, sh, cy, H, gx)},scale={W}:{H}:flags=lanczos{_sharpen(H / sh)},setsar=1,{tail}"
 
     if layout == "stack":
         top, bottom = li.stack_top, H - li.stack_top
@@ -156,7 +167,7 @@ def build(layout: str, li: LayoutInput) -> str:
         return (
             f"[0:v]split=2[a][b];"
             f"[a]{cam}[top];"
-            f"[b]{gcrop},scale={W}:{bottom}:flags=lanczos,setsar=1[bot];"
+            f"[b]{gcrop},scale={W}:{bottom}:flags=lanczos{_sharpen(bottom / sh)},setsar=1[bot];"
             f"[top][bot]vstack=inputs=2,{tail}"
         )
 
@@ -166,7 +177,7 @@ def build(layout: str, li: LayoutInput) -> str:
         return (
             f"[0:v]split=2[a][b];"
             f"[a]{_fit_panel(li.hand, W, top, 't')}[top];"
-            f"[b]{gcrop},scale={W}:{bottom}:flags=lanczos,setsar=1[bot];"
+            f"[b]{gcrop},scale={W}:{bottom}:flags=lanczos{_sharpen(bottom / sh)},setsar=1[bot];"
             f"[top][bot]vstack=inputs=2,{tail}"
         )
 
@@ -178,7 +189,7 @@ def build(layout: str, li: LayoutInput) -> str:
             f"[0:v]split=3[a][b][c];"
             f"[a]{_fit_panel(li.cam, W, fh_, 'f')}[f];"
             f"[b]{_fit_panel(li.hand, W, hh_, 'h')}[h];"
-            f"[c]{gcrop},scale={W}:{gh}:flags=lanczos,setsar=1[g];"
+            f"[c]{gcrop},scale={W}:{gh}:flags=lanczos{_sharpen(gh / sh)},setsar=1[g];"
             f"[f][h][g]vstack=inputs=3,{tail}"
         )
 

@@ -323,6 +323,9 @@ class Scorer:
                 resp = self._client.chat.completions.create(model=self.s.llm_model, messages=messages)
         except openai.AuthenticationError as e:
             raise ClipForgeError(f"{self.p.name} lehnt den API-Key ab.", "Prüfe den Key in den Einstellungen.", str(e)) from e
+        except openai.PermissionDeniedError as e:  # z. B. NVIDIA antwortet bei falschem Key mit 403
+            raise ClipForgeError(f"{self.p.name} lehnt den API-Key ab oder erlaubt dieses Modell nicht.",
+                                 "Prüfe den Key in den Einstellungen oder wähle ein anderes Modell.", str(e)) from e
         except openai.NotFoundError as e:
             raise ClipForgeError(f"Das Modell „{self.s.llm_model}“ gibt es bei {self.p.name} nicht.",
                                  "Wähle ein Modell aus der Liste in den Einstellungen.", str(e)) from e
@@ -467,7 +470,12 @@ def list_models(s: Settings, provider_id: str | None = None) -> list[str]:
         base = server_url(p, s.llm_base_url if p.id == s.llm_provider else "")
         if not base or (p.needs_key and not key):
             return list(p.models)
-        return sorted(m.id for m in openai.OpenAI(api_key=key or "lokal", base_url=base).models.list())
+        ids = sorted(m.id for m in openai.OpenAI(api_key=key or "lokal", base_url=base).models.list())
+        if p.id == "nvidia":  # NVIDIA listet auch Embedding-, Sicherheits- und Bildmodelle: nur Textmodelle zeigen
+            skip = ("embed", "guard", "safety", "reward", "parse", "clip", "vision", "-vl", "vila", "neva", "kosmos",
+                    "deplot", "fuyu", "detector", "translate", "retriever", "code", "starcoder", "calibration")
+            ids = [i for i in ids if not any(k in i.lower() for k in skip)]
+        return ids
     except Exception as e:
         log.warning("Modellliste von %s nicht abrufbar: %s", p.name, e)
         return list(p.models)

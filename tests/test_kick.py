@@ -83,7 +83,7 @@ def test_errors(monkeypatch):
         kick.resolve(URL)
 
 
-def test_best_variant_picks_highest_up_to_limit():
+def test_best_variant_picks_highest():
     master = "\n".join([
         "#EXTM3U",
         "#EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=852x480", "480p30/playlist.m3u8",
@@ -91,6 +91,7 @@ def test_best_variant_picks_highest_up_to_limit():
         "#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080", "1080p30/playlist.m3u8",
         "#EXT-X-STREAM-INF:BANDWIDTH=12000000,RESOLUTION=2560x1440", "1440p60/playlist.m3u8",
     ])
-    assert kick.best_variant(M3U8, master).endswith("/1080p60/playlist.m3u8")
+    assert kick.best_variant(M3U8, master).endswith("/1440p60/playlist.m3u8")  # immer die beste
+    assert kick.best_variant(M3U8, master, max_height=1080).endswith("/1080p60/playlist.m3u8")
     assert kick.best_variant(M3U8, master, max_height=480).endswith("/480p30/playlist.m3u8")
     assert kick.best_variant(M3U8, "#EXTM3U\n") == M3U8

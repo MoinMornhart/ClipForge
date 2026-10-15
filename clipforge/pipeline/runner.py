@@ -36,6 +36,14 @@ def _noop(step: str, frac: float, msg: str) -> None:
     pass
 
 
+def export_fps(s: Settings, media: dict) -> int:
+    """Bildrate des Exports: fest eingestellt oder wie die Quelle (24–60), damit 60-fps-Streams flüssig bleiben."""
+    if s.export_fps:
+        return s.export_fps
+    src = float(media.get("fps") or 30.0)
+    return int(min(60, max(24, round(src))))
+
+
 _USER_FIELDS = ("id", "status", "title", "description", "hashtags", "layout", "score", "ai_reason", "export_path",
                 "edited_words", "user_bounds")
 
@@ -387,7 +395,8 @@ class Pipeline:
                    words: list | None = None) -> render.RenderJob:
         s = self.s
         return render.RenderJob(
-            proj.source.path, clip, out, clip.layout or s.default_layout, s.fps, s.codec, s.use_nvenc,
+            proj.source.path, clip, out, clip.layout or s.default_layout, export_fps(s, proj.media), s.codec,
+            s.use_nvenc,
             facecam=cam, words=words if words is not None else proj.load_words(),
             subtitle_style=SubtitleStyle.from_dict(s.subtitles), loudnorm=s.loudnorm, trim_silence=s.trim_silence,
             watermark=s.watermark, watermark_pos=s.watermark_pos, watermark_opacity=s.watermark_opacity,
