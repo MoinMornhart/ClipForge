@@ -2,7 +2,7 @@
 ; Installiert ohne Adminrechte nach %LOCALAPPDATA%\Programs\ClipForge.
 
 #ifndef MyVersion
-  #define MyVersion "0.2.0"
+  #define MyVersion "0.2.1"
 #endif
 #ifndef Stage
   #define Stage "..\build\stage"

@@ -132,3 +132,18 @@ def test_portrait_source_renders(portrait, tmp_path, layout, kind):
     r = subprocess.run([FF, "-v", "error", "-i", str(portrait), "-filter_complex", graph, "-map", "[vl]",
                         "-frames:v", "2", "-f", "null", "-"], cwd=tmp_path, capture_output=True, text=True)
     assert r.returncode == 0, f"{layout}/{kind} → {resolved}: {r.stderr[-400:]}"
+
+
+def test_stack_shows_whole_cam():
+    """Hochkant-Cam (z. B. Bär am Bildrand): oben wird das GANZE Fenster gezeigt, nicht ein Streifen daraus."""
+    from clipforge.pipeline.facecam import Rect
+
+    cam = Rect(1085, 146, 195, 356)  # echtes Kick-VOD, 1280×720
+    top = layouts.panel_height(cam)
+    assert top == layouts.PANEL_MAX
+    li = layouts.LayoutInput(1280, 720, 30, cam=cam, stack_top=top)
+    g = layouts.build("stack", li)
+    assert "crop=194:356:1084:146" in g  # komplettes Cam-Fenster
+    assert "force_original_aspect_ratio=decrease" in g  # eingepasst statt beschnitten
+    wide = Rect(1500, 0, 420, 236)  # breite 16:9-Cam: wenig Platz oben, mehr Gameplay
+    assert layouts.panel_height(wide) <= 640

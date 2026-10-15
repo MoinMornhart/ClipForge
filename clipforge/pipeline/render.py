@@ -97,6 +97,11 @@ def plan(job: RenderJob, media: dict, work: Path) -> tuple[str, str]:
         li.face = fc.Rect.from_norm(cam_info.face, sw, sh)
     if has_hand:
         li.hand = fc.Rect.from_norm(cam_info.handcam, sw, sh)
+    # Kamerabereich oben so hoch, dass die ganze Cam zu sehen ist (statt eines festen, breiten Streifens)
+    if layout == "stack" and li.cam:
+        li.stack_top = layouts.panel_height(li.cam)
+    elif layout == "hand" and li.hand:
+        li.stack_top = layouts.panel_height(li.hand)
     content = cam_info.content if cam_info else None
     if job.smart_crop and layout in ("crop", "stack", "corner", "blur", "hand", "face_hand"):
         try:
@@ -126,10 +131,10 @@ def plan(job: RenderJob, media: dict, work: Path) -> tuple[str, str]:
         except Exception as e:
             log.warning("Markiertes Objekt nicht ladbar: %s", e)
 
-    if layout in ("stack", "cam") and (has_cam or fullcam):
+    if layout == "cam" and (has_cam or fullcam):
         region = li.cam if has_cam else fc.Rect(0, 0, sw, sh)
-        aspect = W / li.stack_top if layout == "stack" else W / H
-        if layout == "cam" and has_cam:
+        aspect = W / H
+        if has_cam:
             # ohne Objekt: Facecam-Fenster als Ganzes; mit Objekt: im Seitenverhältnis des Fensters mitzoomen
             aspect = region.w / region.h if finder else None
         if aspect and finder:

@@ -101,6 +101,30 @@ def _cam_crop(li: LayoutInput, name: str = "cam") -> str:
     return f"{prefix}crop@{name}=w={ww}:h={wh}:x={_even(x)}:y={_even(y)}"
 
 
+PANEL_MIN, PANEL_MAX = 560, 900  # Höhe des Kamerabereichs oben (von 1920)
+
+
+def panel_height(r: Rect, lo: int = PANEL_MIN, hi: int = PANEL_MAX) -> int:
+    """Höhe, in der das Kamerafenster r in voller Breite ganz zu sehen ist – begrenzt, damit genug Gameplay
+    bleibt. Breite Cams bekommen wenig, hochkant-Cams (z. B. ein Avatar am Rand) viel Platz."""
+    return _even(min(hi, max(lo, W * r.h / max(r.w, 1))))
+
+
+def _fit_panel(r: Rect, w: int, h: int, tag: str) -> str:
+    """Kamerafenster r KOMPLETT in w×h zeigen (nichts abgeschnitten): so groß wie möglich, die freien Ränder
+    füllt eine unscharfe Kopie derselben Cam. Liefert eine Filterkette ohne Ein-/Ausgangslabel."""
+    crop = f"crop={_even(r.w)}:{_even(r.h)}:{_even(r.x) if r.x >= 2 else 0}:{_even(r.y) if r.y >= 2 else 0}"
+    if abs((r.w / r.h) - (w / h)) / (w / h) < 0.03:  # passt praktisch genau
+        return f"{crop},scale={w}:{h}:flags=lanczos,setsar=1"
+    bw, bh = _even(w / 4), _even(h / 4)
+    return (f"{crop},split=2[{tag}b][{tag}f];"
+            f"[{tag}b]scale={bw}:{bh}:force_original_aspect_ratio=increase,crop={bw}:{bh},boxblur=8:2,"
+            f"scale={w}:{h},setsar=1[{tag}bb];"
+            f"[{tag}f]scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,"
+            f"setsar=1[{tag}ff];"
+            f"[{tag}bb][{tag}ff]overlay=(W-w)/2:(H-h)/2")
+
+
 def _gameplay_crop(sw: int, sh: int, cy: int, out_h: int, gx: int | None) -> str:
     """Gameplay-Ausschnitt mit Seitenverhältnis W:out_h. Bei schmalen Quellen (Hochformat) wäre er breiter
     als das Bild: dann volle Breite und passend weniger Höhe (mittig)."""
@@ -128,9 +152,10 @@ def build(layout: str, li: LayoutInput) -> str:
     if layout == "stack":
         top, bottom = li.stack_top, H - li.stack_top
         gcrop = _gameplay_crop(sw, sh, cy, bottom, gx)
+        cam = _fit_panel(li.cam, W, top, "t") if li.cam else f"{_cam_crop(li)},scale={W}:{top}:flags=lanczos,setsar=1"
         return (
             f"[0:v]split=2[a][b];"
-            f"[a]{_cam_crop(li)},scale={W}:{top}:flags=lanczos,setsar=1[top];"
+            f"[a]{cam}[top];"
             f"[b]{gcrop},scale={W}:{bottom}:flags=lanczos,setsar=1[bot];"
             f"[top][bot]vstack=inputs=2,{tail}"
         )
@@ -138,10 +163,9 @@ def build(layout: str, li: LayoutInput) -> str:
     if layout == "hand":
         top, bottom = li.stack_top, H - li.stack_top
         gcrop = _gameplay_crop(sw, sh, cy, bottom, gx)
-        hw = fit_window(li.hand, W / top)
         return (
             f"[0:v]split=2[a][b];"
-            f"[a]{_crop(hw)},scale={W}:{top}:flags=lanczos,setsar=1[top];"
+            f"[a]{_fit_panel(li.hand, W, top, 't')}[top];"
             f"[b]{gcrop},scale={W}:{bottom}:flags=lanczos,setsar=1[bot];"
             f"[top][bot]vstack=inputs=2,{tail}"
         )
@@ -150,13 +174,10 @@ def build(layout: str, li: LayoutInput) -> str:
         fh_, hh_ = li.face_hand_rows
         gh = H - fh_ - hh_
         gcrop = _gameplay_crop(sw, sh, cy, gh, gx)
-        face_c = (li.face.cx, li.face.cy) if li.face else None
-        fwin = fit_window(li.cam, W / fh_, face_c)
-        hwin = fit_window(li.hand, W / hh_)
         return (
             f"[0:v]split=3[a][b][c];"
-            f"[a]{_crop(fwin)},scale={W}:{fh_}:flags=lanczos,setsar=1[f];"
-            f"[b]{_crop(hwin)},scale={W}:{hh_}:flags=lanczos,setsar=1[h];"
+            f"[a]{_fit_panel(li.cam, W, fh_, 'f')}[f];"
+            f"[b]{_fit_panel(li.hand, W, hh_, 'h')}[h];"
             f"[c]{gcrop},scale={W}:{gh}:flags=lanczos,setsar=1[g];"
             f"[f][h][g]vstack=inputs=3,{tail}"
         )
@@ -194,15 +215,15 @@ def build(layout: str, li: LayoutInput) -> str:
             return f"[0:v]{_cam_crop(li)},scale={W}:{H}:flags=lanczos,setsar=1,{tail}"
         # Facecam-Fenster groß in die Mitte, unscharfe Kopie als Hintergrund
         c = li.cam
-        fh = _even(W * c.h / c.w)
-        # mit markiertem Objekt: nachgeführter, mitzoomender Ausschnitt; sonst das ganze Fenster
-        crop = _cam_crop(li) if li.cam_window else f"crop={_even(c.w)}:{_even(c.h)}:{_even(c.x)}:{_even(c.y)}"
+        if not li.cam_window:  # ganzes Fenster, eingepasst
+            return f"[0:v]{_fit_panel(c, W, H, 'c')},{tail}"
+        # mit markiertem Objekt: nachgeführter, mitzoomender Ausschnitt, ebenfalls ganz eingepasst
         return (
-            f"[0:v]{crop},split=2[a][b];"
+            f"[0:v]{_cam_crop(li)},split=2[a][b];"
             f"[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=12:2,"
             f"scale={W}:{H},setsar=1[bg];"
-            f"[b]scale={W}:{fh}:flags=lanczos,setsar=1[fg];"
-            f"[bg][fg]overlay=0:(H-h)*0.42,{tail}"
+            f"[b]scale={W}:{H}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,setsar=1[fg];"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,{tail}"
         )
 
     # blur (Standard): Hintergrund klein rechnen, weichzeichnen, hochskalieren – spart viel Rechenzeit

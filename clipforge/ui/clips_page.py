@@ -296,6 +296,10 @@ class ClipsPage(QWidget):
         self._previewing = False
         self.export_task: Task | None = None
         self._save_timer = QTimer(self, singleShot=True, interval=400, timeout=self._save)
+        # 9:16-Livebild neben dem Player: neu rendern, sobald sich Clip, Layout, Grenzen oder Facecam ändern
+        self._pv916_timer = QTimer(self, singleShot=True, interval=300, timeout=self._render_916)
+        self._pv916_task: Task | None = None
+        self._pv916_key = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 18, 20, 14)
@@ -354,7 +358,25 @@ class ClipsPage(QWidget):
         self.view = QStackedWidget()
         self.view.addWidget(self.poster)
         self.view.addWidget(self.video)
-        rl.addWidget(self.view, 3)
+        viewrow = QHBoxLayout()
+        viewrow.setSpacing(10)
+        viewrow.addWidget(self.view, 1)
+        side = QVBoxLayout()
+        side.setSpacing(4)
+        cap = QLabel("So sieht der Clip aus (9:16)")
+        cap.setObjectName("muted")
+        cap.setAlignment(Qt.AlignCenter)
+        self.pv916 = QLabel("Rendere Vorschau …")
+        self.pv916.setObjectName("muted")
+        self.pv916.setAlignment(Qt.AlignCenter)
+        self.pv916.setFixedWidth(200)
+        self.pv916.setMinimumHeight(300)
+        self.pv916.setStyleSheet(f"background:#000; border:1px solid {theme.LINE}; border-radius:8px;")
+        self.pv916.setToolTip("Mittleres Bild des Clips im gewählten Layout – genau so wird exportiert")
+        side.addWidget(cap)
+        side.addWidget(self.pv916, 1)
+        viewrow.addLayout(side)
+        rl.addLayout(viewrow, 3)
         self.range = RangeSlider()
         self.range.changed.connect(self._range_changed)
         self.range.seek.connect(lambda t: self.player.setPosition(int(t * 1000)))
@@ -374,7 +396,8 @@ class ClipsPage(QWidget):
             self.layout_box.addItem(v, k)
         self.layout_box.setMinimumWidth(240)
         self.layout_box.currentIndexChanged.connect(self._edited)
-        self.preview_btn = QPushButton("9:16-Vorschau")
+        self.preview_btn = QPushButton("Als Video ansehen")
+        self.preview_btn.setToolTip("Den ganzen Clip in 9:16 rendern und im Player öffnen")
         self.preview_btn.clicked.connect(self._preview)
         ctl.addWidget(self.play_btn)
         self.nudge_btns = nudge
@@ -663,6 +686,51 @@ class ClipsPage(QWidget):
         self._loading = False
         self.player.setPosition(int(c.start * 1000))
         self._show_still()
+        self._pv916_timer.start()
+
+    def _render_916(self):
+        """Ein Bild aus der Clipmitte im gewählten Layout rendern (unter 1 s) und neben dem Player zeigen."""
+        c, proj = self.cur, self.proj
+        if not c or not proj or not proj.source or not proj.source.path.exists():
+            return
+        if self._pv916_task is not None:  # läuft noch: danach erneut
+            self._pv916_timer.start()
+            return
+        import hashlib
+        import json
+
+        cam = Facecam.from_dict(proj.state.get("facecam"))
+        layout = c.layout or self.s.default_layout
+        at = round((c.start + c.end) / 2, 1)
+        key = hashlib.sha1(json.dumps([layout, at, proj.state.get("facecam")], sort_keys=True,
+                                      default=str).encode()).hexdigest()[:12]
+        out = proj.dir / "pv916" / f"{key}.png"
+        self._pv916_key = key
+        if out.exists():
+            self._show_916(out, key)
+            return
+        out.parent.mkdir(exist_ok=True)
+        media = proj.media
+
+        def job(progress, cancel, confirm):
+            return render.preview_frame(proj.source.path, at, layout, cam, media, out)
+
+        t = Task(job)
+        self._pv916_task = t
+        t.finished.connect(lambda p, k=key: (setattr(self, "_pv916_task", None), self._show_916(p, k)))
+        t.failed.connect(lambda m, h: (setattr(self, "_pv916_task", None), self.pv916.setText(m)))
+        self._track(t)
+        t.start()
+
+    def _show_916(self, path, key):
+        if key != self._pv916_key:  # inzwischen anderer Clip/anderes Layout gewählt
+            self._pv916_timer.start()
+            return
+        pm = QPixmap(str(path))
+        if pm.isNull():
+            return
+        self._pv916_pm = pm
+        self.pv916.setPixmap(pm.scaled(self.pv916.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def _state_text(self, c: Clip, row: int) -> str:
         label = STATUS_STYLE.get(c.status, STATUS_STYLE[STATUS_NEW])[0]
@@ -692,6 +760,9 @@ class ClipsPage(QWidget):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        if getattr(self, "_pv916_pm", None):
+            self.pv916.setPixmap(self._pv916_pm.scaled(self.pv916.size(), Qt.KeepAspectRatio,
+                                                       Qt.SmoothTransformation))
         if getattr(self, "_poster_pm", None):
             self.poster.setPixmap(self._poster_pm.scaled(self.poster.size(), Qt.KeepAspectRatio,
                                                          Qt.SmoothTransformation))
@@ -713,6 +784,7 @@ class ClipsPage(QWidget):
         c.hashtags = [t if t.startswith("#") else f"#{t}" for t in self.tags_edit.text().split() if t.strip("#")]
         c.layout = self.layout_box.currentData()
         self._save_timer.start()
+        self._pv916_timer.start()
 
     def _range_changed(self, start: float, end: float):
         if self._loading or not self.cur:
@@ -723,6 +795,7 @@ class ClipsPage(QWidget):
             self.cur.edited_words = []
         self._show_transcript()
         self._save_timer.start()
+        self._pv916_timer.start()
 
     def _nudge(self, which: str, d: float):
         if not self.cur:
@@ -819,7 +892,7 @@ class ClipsPage(QWidget):
     def _preview_reset(self):
         self._previewing = False
         self.preview_btn.setEnabled(self.cur is not None)
-        self.preview_btn.setText("9:16-Vorschau")
+        self.preview_btn.setText("Als Video ansehen")
 
     def _preview_done(self, out: Path):
         self._preview_reset()
