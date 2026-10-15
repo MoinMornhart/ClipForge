@@ -554,6 +554,10 @@ class SettingsPage(QWidget):
             self.layout_def.addItem(v, k)
         self.layout_def.setCurrentIndex(max(0, self.layout_def.findData(self.s.default_layout)))
         f.addRow("Standard-Layout", self.layout_def)
+        self.cam_size = QSpinBox(minimum=25, maximum=50, value=self.s.cam_size, suffix=" %")
+        self.cam_size.setToolTip("Wie viel der Bildhöhe die Facecam bei „Facecam oben“ höchstens bekommt. "
+                                 "Kleiner = mehr vom Spiel. Pro Clip im Editor änderbar.")
+        f.addRow("Facecam-Größe (oben)", self.cam_size)
         self.codec = QComboBox()
         self.codec.addItem("H.264 (überall abspielbar)", "h264")
         self.codec.addItem("H.265 / HEVC (kleinere Dateien)", "hevc")
@@ -718,6 +722,7 @@ class SettingsPage(QWidget):
         s.export_dir, s.download_dir = self.export_dir.text().strip(), self.download_dir.text().strip()
         s.filename_pattern = self.pattern.text().strip() or "{date}_{streamer}_{title}"
         s.default_layout = self.layout_def.currentData()
+        s.cam_size = self.cam_size.value()
         s.codec, s.export_fps = self.codec.currentData(), self.fps.currentData()
         s.use_nvenc, s.loudnorm, s.trim_silence = self.nvenc.isChecked(), self.loud.isChecked(), self.trim.isChecked()
         s.smart_crop, s.track_face = self.smart.isChecked(), self.track.isChecked()

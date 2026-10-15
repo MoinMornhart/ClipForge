@@ -50,6 +50,11 @@ _USER_FIELDS = ("id", "status", "title", "description", "hashtags", "layout", "s
 EXTRAS = ("subtitles", "watermark", "intro_outro", "loudnorm")
 
 
+def cam_size(clip: Clip, s: Settings) -> int:
+    """Größe des Facecam-Bereichs oben in % der Bildhöhe: Clip-Einstellung vor Grundeinstellung."""
+    return int((clip.extras or {}).get("cam_size", s.cam_size))
+
+
 def extra_on(clip: Clip, s: Settings, key: str) -> bool:
     """Ist ein Extra für diesen Clip an? Clip-Einstellung vor Grundeinstellung."""
     if key in (clip.extras or {}):
@@ -414,7 +419,7 @@ class Pipeline:
             subtitle_style=style, loudnorm=extra_on(clip, s, "loudnorm"), trim_silence=s.trim_silence,
             watermark=s.watermark if extra_on(clip, s, "watermark") else "", watermark_pos=s.watermark_pos,
             watermark_opacity=s.watermark_opacity, intro=s.intro if io else "", outro=s.outro if io else "",
-            track_face=s.track_face, smart_crop=s.smart_crop)
+            track_face=s.track_face, smart_crop=s.smart_crop, cam_size=cam_size(clip, s))
 
     def export(self, proj: Project, clips: list[Clip] | None = None, only_approved: bool = False) -> list[Path]:
         all_clips = proj.load_clips()

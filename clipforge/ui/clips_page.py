@@ -429,6 +429,18 @@ class ClipsPage(QWidget):
             cb.toggled.connect(lambda on, k=key: self._extra_changed(k, on))
             self.extra_boxes[key] = cb
             ext.addWidget(cb)
+        ext.addSpacing(14)
+        from PySide6.QtWidgets import QSlider
+
+        self.cam_lbl = QLabel("Facecam 40 %")
+        self.cam_lbl.setToolTip("Wie viel der Bildhöhe die Facecam oben höchstens bekommt – kleiner = mehr Spiel")
+        self.cam_slider = QSlider(Qt.Horizontal)
+        self.cam_slider.setRange(25, 50)
+        self.cam_slider.setFixedWidth(130)
+        self.cam_slider.setToolTip(self.cam_lbl.toolTip())
+        self.cam_slider.valueChanged.connect(self._cam_size_changed)
+        ext.addWidget(self.cam_lbl)
+        ext.addWidget(self.cam_slider)
         ext.addStretch(1)
         self.extras_all = QPushButton("Für alle Clips übernehmen")
         self.extras_all.setToolTip("Diese Schalter für alle Clips dieses VODs setzen")
@@ -740,9 +752,13 @@ class ClipsPage(QWidget):
         self._pv916_timer.start()
 
     def _load_extras(self, c: Clip):
-        from clipforge.pipeline.runner import extra_on
+        from clipforge.pipeline.runner import cam_size, extra_on
 
         s = self.s
+        self.cam_slider.blockSignals(True)
+        self.cam_slider.setValue(cam_size(c, s))
+        self.cam_lbl.setText(f"Facecam {cam_size(c, s)} %")
+        self.cam_slider.blockSignals(False)
         files = {"watermark": bool(s.watermark), "intro_outro": bool(s.intro or s.outro)}
         for key, cb in self.extra_boxes.items():
             cb.blockSignals(True)
@@ -762,10 +778,19 @@ class ClipsPage(QWidget):
                  "loudnorm": "Lautstärke angleichen"}
         self.status_message.emit(f"{names[key]} für diesen Clip {'an' if on else 'aus'}.")
 
+    def _cam_size_changed(self, v: int):
+        self.cam_lbl.setText(f"Facecam {v} %")
+        if self._loading or not self.cur:
+            return
+        self.cur.extras = {**(self.cur.extras or {}), "cam_size": v}
+        self._save_timer.start()
+        self._pv916_timer.start()
+
     def _extras_to_all(self):
         if not self.cur:
             return
         vals = {k: cb.isChecked() for k, cb in self.extra_boxes.items() if cb.isEnabled()}
+        vals["cam_size"] = self.cam_slider.value()
         for c in self.clips:
             c.extras = {**(c.extras or {}), **vals}
         self._save()
@@ -783,9 +808,10 @@ class ClipsPage(QWidget):
         import hashlib
         import json
 
-        from clipforge.pipeline.runner import extra_on
+        from clipforge.pipeline.runner import cam_size, extra_on
         from clipforge.pipeline.subtitles import SubtitleStyle
 
+        size = cam_size(c, self.s)
         cam = Facecam.from_dict(proj.state.get("facecam"))
         layout = c.layout or self.s.default_layout
         words = [Word(w, s, e) for w, s, e in c.edited_words] if c.edited_words else \
@@ -796,7 +822,7 @@ class ClipsPage(QWidget):
         style = SubtitleStyle.from_dict(self.s.subtitles)
         style.enabled = extra_on(c, self.s, "subtitles")
         key = hashlib.sha1(json.dumps([layout, at, proj.state.get("facecam"), style.enabled, self.s.subtitles,
-                                       c.edited_words], sort_keys=True, default=str).encode()).hexdigest()[:12]
+                                       c.edited_words, size], sort_keys=True, default=str).encode()).hexdigest()[:12]
         out = proj.dir / "pv916" / f"{key}.png"
         self._pv916_key = key
         if out.exists():
@@ -807,7 +833,7 @@ class ClipsPage(QWidget):
 
         def job(progress, cancel, confirm):
             return render.preview_frame(proj.source.path, at, layout, cam, media, out, words=words,
-                                        subtitle_style=style)
+                                        subtitle_style=style, cam_size=size)
 
         t = Task(job)
         self._pv916_task = t

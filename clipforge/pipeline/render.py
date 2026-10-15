@@ -51,6 +51,7 @@ class RenderJob:
     outro: str = ""
     track_face: bool = True
     smart_crop: bool = True
+    cam_size: int = 40  # Facecam-/Handcam-Bereich oben: höchstens so viel % der Bildhöhe
 
 
 def encoder_args(codec: str, nvenc: bool) -> list[str]:
@@ -100,10 +101,12 @@ def plan(job: RenderJob, media: dict, work: Path) -> tuple[str, str]:
     if has_hand:
         li.hand = fc.Rect.from_norm(cam_info.handcam, sw, sh)
     # Kamerabereich oben so hoch, dass die ganze Cam zu sehen ist (statt eines festen, breiten Streifens)
+    hi = layouts._even(H * min(50, max(25, job.cam_size)) / 100)
+    lo = min(layouts.PANEL_MIN, hi)
     if layout == "stack" and li.cam:
-        li.stack_top = layouts.panel_height(li.cam)
+        li.stack_top = layouts.panel_height(li.cam, lo, hi)
     elif layout == "hand" and li.hand:
-        li.stack_top = layouts.panel_height(li.hand)
+        li.stack_top = layouts.panel_height(li.hand, lo, hi)
     content = cam_info.content if cam_info else None
     if job.smart_crop and layout in ("crop", "stack", "corner", "blur", "hand", "face_hand"):
         try:
@@ -182,13 +185,13 @@ def _zero_start(graph: str) -> str:
 
 def preview_frame(src: Path, at: float, layout: str, cam: fc.Facecam | None, media: dict, out_png: Path,
                   ffmpeg_path: str = "", words: list[Word] | None = None,
-                  subtitle_style: SubtitleStyle | None = None) -> Path:
+                  subtitle_style: SubtitleStyle | None = None, cam_size: int = 40) -> Path:
     """Ein einzelnes 9:16-Bild mit dem gewählten Layout – für die Live-Vorschau im Facecam-Dialog.
     Ohne Nachführung und ohne Bildanalyse, damit es in unter einer Sekunde fertig ist."""
     work = Path(tempfile.mkdtemp(prefix="cf_preview_"))
     try:
         job = RenderJob(src, Clip(at, at + 1.0, at, []), out_png, layout, facecam=cam, smart_crop=False,
-                        track_face=False)
+                        track_face=False, cam_size=cam_size)
         _, graph = plan(job, media, work)
         graph = _zero_start(graph)
         if subtitle_style and subtitle_style.enabled and words:
