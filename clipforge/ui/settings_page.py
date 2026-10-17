@@ -539,17 +539,58 @@ class SettingsPage(QWidget):
         self.profiles.setEditTriggers(QTableWidget.NoEditTriggers)
         v.addWidget(self.profiles, 1)
         self._fill_profiles()
+        lbl = QLabel("Eigene Layouts")
+        lbl.setObjectName("h2")
+        v.addWidget(lbl)
+        hint = QLabel("Angelegt im Clip-Editor über „Anpassen …“ neben der Layout-Auswahl.")
+        hint.setObjectName("muted")
+        v.addWidget(hint)
+        self.custom_tbl = QTableWidget(0, 3)
+        self.custom_tbl.setHorizontalHeaderLabels(["Name", "Facecam", ""])
+        self.custom_tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.custom_tbl.verticalHeader().hide()
+        self.custom_tbl.setEditTriggers(QTableWidget.NoEditTriggers)
+        v.addWidget(self.custom_tbl, 1)
+        self._fill_custom_layouts()
         return w
 
     def showEvent(self, e):
         super().showEvent(e)
         self._fill_profiles()
+        self._fill_custom_layouts()
         fresh = Settings.load()  # Exportordner kann unter Clips → „Ordner …“ geändert worden sein
         self.export_dir.setText(fresh.export_dir)
         self.download_dir.setText(fresh.download_dir)
         from clipforge.core import budget
 
         self.budget_state.setText(budget.status_text(fresh))  # Profile können inzwischen im Facecam-Dialog angelegt worden sein
+
+    def _fill_custom_layouts(self):
+        s = Settings.load()
+        self.custom_tbl.setRowCount(0)
+        for name in sorted(s.custom_layouts):
+            r = self.custom_tbl.rowCount()
+            self.custom_tbl.insertRow(r)
+            x, y, w = s.custom_layouts[name].get("cam", [0, 0, 0])
+            self.custom_tbl.setItem(r, 0, QTableWidgetItem(name + ("  (Standard)" if s.default_layout ==
+                                                                   f"custom:{name}" else "")))
+            self.custom_tbl.setItem(r, 1, QTableWidgetItem(f"{w * 100:.0f} % breit, oben {y * 100:.0f} %"))
+            b = QPushButton("Löschen")
+            b.clicked.connect(lambda _=False, n=name: self._delete_custom(n))
+            self.custom_tbl.setCellWidget(r, 2, b)
+
+    def _delete_custom(self, name: str):
+        s = Settings.load()
+        s.custom_layouts.pop(name, None)
+        if s.default_layout == f"custom:{name}":
+            s.default_layout = "auto"
+        s.save()
+        self.s = s
+        self._fill_custom_layouts()
+        i = self.layout_def.findData(f"custom:{name}")
+        if i >= 0:
+            self.layout_def.removeItem(i)
+        self.status_message.emit(f"Eigenes Layout „{name}“ gelöscht.")
 
     def _fill_profiles(self):
         profs = Settings.load().facecam_profiles
@@ -604,6 +645,8 @@ class SettingsPage(QWidget):
         self.layout_def = QComboBox()
         for k, v in LAYOUTS.items():
             self.layout_def.addItem(v, k)
+        for name in sorted(self.s.custom_layouts):
+            self.layout_def.addItem(f"Eigenes: {name}", f"custom:{name}")
         self.layout_def.setCurrentIndex(max(0, self.layout_def.findData(self.s.default_layout)))
         f.addRow("Standard-Layout", self.layout_def)
         self.cam_size = QSpinBox(minimum=25, maximum=50, value=self.s.cam_size, suffix=" %")

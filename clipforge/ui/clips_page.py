@@ -328,6 +328,18 @@ class ClipsPage(QWidget):
         self.facecam_btn.clicked.connect(self._facecam)
         head.addWidget(self.sort)
         head.addWidget(self.show_rejected)
+        # Spiel: bestimmt den Gameplay-Ausschnitt (z. B. Fortnite mittig auf dem Skin, etwas breiter)
+        from clipforge.pipeline.games import GAMES
+
+        self.game_box = QComboBox()
+        self.game_box.setToolTip("Spiel des VODs – Fortnite & Co. bekommen einen Ausschnitt, in dem der eigene "
+                                 "Skin samt Umgebung zu sehen ist")
+        self.game_box.addItem("Spiel: automatisch", "auto")
+        for k, g in GAMES.items():
+            self.game_box.addItem(f"Spiel: {g.name}", k)
+        self.game_box.addItem("Spiel: anderes", "none")
+        self.game_box.currentIndexChanged.connect(self._game_changed)
+        head.addWidget(self.game_box)
         head.addWidget(self.facecam_btn)
         self.back_btn = QPushButton("← Alle VODs")
         self.back_btn.setToolTip("Zurück zur Übersicht aller VODs")
@@ -400,10 +412,12 @@ class ClipsPage(QWidget):
             b.clicked.connect(lambda _=False, w=which, dd=d: self._nudge(w, dd))
             nudge.append(b)
         self.layout_box = QComboBox()
-        for k, v in LAYOUTS.items():
-            self.layout_box.addItem(v, k)
+        self._fill_layouts()
         self.layout_box.setMinimumWidth(240)
         self.layout_box.currentIndexChanged.connect(self._edited)
+        self.layout_edit_btn = QPushButton("Anpassen …")
+        self.layout_edit_btn.setToolTip("Eigenes Layout: Facecam frei verschieben und skalieren")
+        self.layout_edit_btn.clicked.connect(self._edit_layout)
         self.preview_btn = QPushButton("Als Video ansehen")
         self.preview_btn.setToolTip("Den ganzen Clip in 9:16 rendern und im Player öffnen")
         self.preview_btn.clicked.connect(self._preview)
@@ -414,6 +428,7 @@ class ClipsPage(QWidget):
         ctl.addStretch(1)
         ctl.addWidget(QLabel("Layout"))
         ctl.addWidget(self.layout_box)
+        ctl.addWidget(self.layout_edit_btn)
         ctl.addWidget(self.preview_btn)
         rl.addLayout(ctl)
         # Extras nur für diesen Clip an/aus (Grundeinstellung unter Einstellungen → Untertitel / Export)
@@ -632,6 +647,7 @@ class ClipsPage(QWidget):
         self.sub.setText(f"{who} · {fmt_time(self.proj.media.get('duration', 0))}"
                          f" · {len(self.clips)} Clips · {cam_txt} · API-Kosten: {self.proj.cost_text()}")
         self.player.setSource(QUrl.fromLocalFile(str(src.path)))
+        self._load_game()
         self.body.setCurrentIndex(1)
         self.head_w.show()
         self.bottom_w.show()
@@ -721,7 +737,7 @@ class ClipsPage(QWidget):
     def _enable_editor(self, on: bool):
         for w in (self.title_edit, self.desc_edit, self.tags_edit, self.hook_edit, self.transcript, self.approve_btn,
                   self.reject_btn,
-                  self.layout_box, self.play_btn, self.range, *self.nudge_btns):
+                  self.layout_box, self.layout_edit_btn, self.play_btn, self.range, *self.nudge_btns):
             w.setEnabled(on)
         self.preview_btn.setEnabled(on and not self._previewing)
         self.right_stack.setCurrentIndex(1 if on else 0)
@@ -748,6 +764,7 @@ class ClipsPage(QWidget):
         self.title_edit.setCursorPosition(0)
         self.tags_edit.setCursorPosition(0)
         self.reason.setText("; ".join(c.reasons) + (f"\nKI: {c.ai_reason}" if c.ai_reason else ""))
+        self._fill_layouts(c)
         idx = self.layout_box.findData(c.layout or self.s.default_layout)
         self.layout_box.setCurrentIndex(max(0, idx))
         dur = self.proj.media.get("duration", c.end + 60)
@@ -759,6 +776,119 @@ class ClipsPage(QWidget):
         self.player.setPosition(int(c.start * 1000))
         self._show_still()
         self._pv916_timer.start()
+
+    # ------------------------------------------------------------------ Spiel + eigene Layouts
+    def _fill_layouts(self, c: Clip | None = None):
+        """Feste Layouts, gespeicherte eigene Layouts und ggf. das Layout nur dieses Clips."""
+        box = self.layout_box
+        box.blockSignals(True)
+        box.clear()
+        for k, v in LAYOUTS.items():
+            box.addItem(v, k)
+        for name in sorted(self.s.custom_layouts):
+            box.addItem(f"Eigenes: {name}" + (" (Standard)" if self.s.default_layout == f"custom:{name}" else ""),
+                        f"custom:{name}")
+        if c is not None and (c.extras or {}).get("custom_cam"):
+            box.addItem("Eigenes: nur dieser Clip", "custom")
+        box.blockSignals(False)
+
+    def _load_game(self):
+        st = self.proj.state
+        detected = st.get("game_name") or ""
+        self.game_box.blockSignals(True)
+        self.game_box.setItemText(0, f"Spiel: automatisch ({detected})" if detected else "Spiel: automatisch")
+        self.game_box.setCurrentIndex(max(0, self.game_box.findData(st.get("game", "auto"))))
+        self.game_box.blockSignals(False)
+        if "game_detected" not in st:  # ältere Projekte: im Hintergrund nachholen
+            proj, s = self.proj, Settings.load()
+
+            def job(progress, cancel, confirm):
+                return Pipeline(s).detect_game(proj)
+
+            t = Task(job)
+            t.finished.connect(lambda _: (self._load_game(), self._pv916_timer.start()) if self.proj is proj else None)
+            self._track(t)
+            t.start()
+
+    def _game_changed(self, _=None):
+        if not self.proj:
+            return
+        self.proj.state["game"] = self.game_box.currentData()
+        self.proj.save()
+        self._pv916_timer.start()
+        self.status_message.emit(f"{self.game_box.currentText()} – Ausschnitt angepasst.")
+
+    def _edit_layout(self):
+        """Editor öffnen: Facecam frei auf dem 9:16-Bild platzieren."""
+        from clipforge.pipeline.facecam import FULL_RES, Rect
+        from clipforge.pipeline.runner import cam_size, custom_border, custom_for, project_game
+        from clipforge.ui.layout_editor import LayoutEditor
+
+        c, proj = self.cur, self.proj
+        if not c or not proj:
+            return
+        fcm = Facecam.from_dict(proj.state.get("facecam"))
+        if not (fcm and fcm.mode == "overlay" and fcm.cam):
+            QMessageBox.information(self, "Eigenes Layout", "Für ein eigenes Layout braucht es ein Facecam-Fenster. "
+                                    "Lege es oben unter „Facecam …“ fest.")
+            return
+        at = (c.start + c.end) / 2
+        try:
+            frames = read_frames(proj.source.path, [at], max_w=FULL_RES)
+        except Exception as e:
+            QMessageBox.warning(self, "Eigenes Layout", f"Das Video konnte nicht gelesen werden.\n\n{e}")
+            return
+        if not frames:
+            return
+        f = frames[0][1]
+        H, W = f.shape[:2]
+        r = Rect.from_norm(fcm.cam, W, H).clamp(W, H)
+        crop = f[int(r.y):int(r.y + r.h), int(r.x):int(r.x + r.w)].copy()
+        cam_pix = QPixmap.fromImage(bgr_to_qimage(crop))
+        aspect = r.w / max(1.0, r.h)
+        layout = c.layout or self.s.default_layout
+        cur = custom_for(c, self.s, layout)
+        if cur is None:  # Startwert wie „Facecam oben drüber“
+            h = cam_size(c, self.s) / 100
+            w = min(0.62, h * 1920 * aspect / 1080)
+            cur = (0.5 - w / 2, 0.025, w)
+        name = layout[7:] if layout.startswith("custom:") else ""
+        dlg = LayoutEditor(cam_pix, aspect, cur, name, custom_border(c, self.s, layout), self)
+        # Hintergrund: Gameplay im Ausschnitt des Spiels, im Hintergrund gerendert
+        out = Path(tempfile.gettempdir()) / f"clipforge_bg_{proj.id}.png"
+        game, media = project_game(proj), proj.media
+
+        def job(progress, cancel, confirm):
+            return render.preview_frame(proj.source.path, at, "crop", None, media, out, game=game)
+
+        t = Task(job)
+        t.finished.connect(lambda p: dlg.set_background(QPixmap(str(p))) if dlg.isVisible() else None)
+        self._track(t)
+        t.start()
+        ok = dlg.exec()
+        dlg.deleteLater()
+        if not ok:
+            return
+        s = Settings.load()
+        if dlg.mode == "once":
+            c.layout = "custom"
+            c.extras = {**(c.extras or {}), "custom_cam": list(dlg.value), "custom_border": dlg.border}
+            msg = "Eigenes Layout für diesen Clip übernommen."
+        else:
+            s.custom_layouts[dlg.name] = {"cam": list(dlg.value), "border": dlg.border}
+            if dlg.mode == "default":
+                s.default_layout = f"custom:{dlg.name}"
+            s.save()
+            c.layout = f"custom:{dlg.name}"
+            msg = (f"„{dlg.name}“ gespeichert" + (" und als Standard festgelegt." if dlg.mode == "default" else "."))
+        self.s = Settings.load() if dlg.mode != "once" else self.s
+        self._fill_layouts(c)
+        self.layout_box.blockSignals(True)
+        self.layout_box.setCurrentIndex(max(0, self.layout_box.findData(c.layout)))
+        self.layout_box.blockSignals(False)
+        self._save()
+        self._pv916_timer.start()
+        self.status_message.emit(msg)
 
     def _load_extras(self, c: Clip):
         from clipforge.pipeline.runner import cam_size, extra_on
@@ -818,10 +948,13 @@ class ClipsPage(QWidget):
         import hashlib
         import json
 
-        from clipforge.pipeline.runner import cam_size, extra_on
+        from clipforge.pipeline.runner import cam_size, custom_border, custom_for, extra_on, project_game
         from clipforge.pipeline.subtitles import SubtitleStyle
 
         size = cam_size(c, self.s)
+        game = project_game(proj)
+        custom = custom_for(c, self.s, c.layout or self.s.default_layout)
+        border = custom_border(c, self.s, c.layout or self.s.default_layout)
         cam = Facecam.from_dict(proj.state.get("facecam"))
         layout = c.layout or self.s.default_layout
         words = [Word(w, s, e) for w, s, e in c.edited_words] if c.edited_words else \
@@ -833,7 +966,8 @@ class ClipsPage(QWidget):
         style.enabled = extra_on(c, self.s, "subtitles")
         hook = c.hook if extra_on(c, self.s, "hook") else ""
         key = hashlib.sha1(json.dumps([layout, at, proj.state.get("facecam"), style.enabled, self.s.subtitles,
-                                       c.edited_words, size, hook], sort_keys=True, default=str).encode()).hexdigest()[:12]
+                                       c.edited_words, size, hook, game, custom, border], sort_keys=True,
+                                      default=str).encode()).hexdigest()[:12]
         out = proj.dir / "pv916" / f"{key}.png"
         self._pv916_key = key
         if out.exists():
@@ -844,7 +978,8 @@ class ClipsPage(QWidget):
 
         def job(progress, cancel, confirm):
             return render.preview_frame(proj.source.path, at, layout, cam, media, out, words=words,
-                                        subtitle_style=style, cam_size=size, hook=hook)
+                                        subtitle_style=style, cam_size=size, hook=hook, game=game,
+                                        custom=custom, cam_border=border)
 
         t = Task(job)
         self._pv916_task = t

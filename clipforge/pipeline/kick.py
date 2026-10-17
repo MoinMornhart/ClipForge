@@ -30,6 +30,7 @@ class KickVod:
     start_time: dt.datetime | None = None  # Streamstart (UTC) für die Chat-Wiedergabe
     channel_id: int | None = None
     duration: float = 0.0
+    game: str = ""  # Kategorie des Streams, z. B. „Fortnite“
 
     @property
     def date(self) -> str:
@@ -64,6 +65,7 @@ def _from_entry(slug: str, vod_id: str, e: dict) -> KickVod:
         title=ls.get("session_title") or "", streamer=(ch.get("user") or {}).get("username") or ch.get("slug") or slug,
         start_time=_ts(ls.get("start_time")), channel_id=ls.get("channel_id"),
         duration=float(ls.get("duration") or 0) / 1000.0,
+        game=((e.get("categories") or ls.get("categories") or [{}])[0] or {}).get("name") or "",
     )
 
 

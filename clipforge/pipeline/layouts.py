@@ -47,10 +47,15 @@ class LayoutInput:
     content_h: int | None = None
     corner_width: int = 440
     cam_box: tuple[int, int] = (670, 768)  # Layout „top“: Facecam höchstens so breit × hoch (oben mittig)
+    zoom: float = 1.0  # < 1: breiterer Gameplay-Ausschnitt (je Spiel, z. B. Fortnite: Skin samt Umgebung)
+    custom: tuple[float, float, float] | None = None  # eigenes Layout: Facecam x, y, Breite (Anteil von 1080×1920)
+    border: bool = True  # Rahmen um die Facecam (Ecke, oben drüber, eigenes Layout)
     accent: str = "0x9146FF"
 
 
 def resolve_layout(layout: str, has_cam: bool, fullcam: bool, has_hand: bool = False) -> str:
+    if layout.startswith("custom"):  # eigenes Layout braucht ein Facecam-Fenster
+        return layout if has_cam else ("cam" if fullcam else "blur")
     if layout in ("", "auto"):
         if has_hand:
             return "face_hand" if has_cam else "hand"
@@ -152,6 +157,34 @@ def _gameplay_crop(sw: int, sh: int, cy: int, out_h: int, gx: int | None) -> str
     return f"crop={gw}:{gh}:{_even(x) if x >= 2 else 0}:{_even(cy) if cy >= 2 else 0}"
 
 
+def _game_chain(li: LayoutInput, sw: int, sh: int, cy: int, out_h: int, gx: int | None, tag: str) -> str:
+    """Gameplay auf W×out_h bringen. Bei zoom < 1 wird ein breiterer Ausschnitt gezeigt (mehr vom Spiel, z. B.
+    der eigene Skin samt Umgebung); die freien Streifen oben/unten füllt eine unscharfe Kopie."""
+    if li.zoom >= 0.99:
+        return f"{_gameplay_crop(sw, sh, cy, out_h, gx)},scale={W}:{out_h}:flags=lanczos{_sharpen(out_h / sh)},setsar=1"
+    gw = gameplay_width(sh, W, out_h)
+    wide = min(_even(sw) if sw % 2 == 0 else _even(sw - 1), _even(gw / li.zoom))
+    fh = min(out_h, _even(W * sh / wide))
+    x = gx + (gw - wide) // 2 if gx is not None else (sw - wide) // 2
+    x = min(max(0, x), sw - wide)
+    crop = f"crop={wide}:{sh}:{_even(x) if x >= 2 else 0}:{cy}"
+    bw, bh = _even(W / 4), _even(out_h / 4)
+    return (f"{crop},split=2[{tag}1][{tag}2];"
+            f"[{tag}1]scale={bw}:{bh}:force_original_aspect_ratio=increase,crop={bw}:{bh},boxblur=10:2,"
+            f"scale={W}:{out_h},setsar=1[{tag}b];"
+            f"[{tag}2]scale={W}:{fh}:flags=lanczos{_sharpen(fh / sh)},setsar=1[{tag}f];"
+            f"[{tag}b][{tag}f]overlay=0:(H-h)/2")
+
+
+def _cam_overlay(li: LayoutInput, cw: int) -> str:
+    """Facecam auf Breite cw (Seitenverhältnis bleibt), optional mit Rahmen in der Akzentfarbe."""
+    c = li.cam
+    ch = _even(cw * c.h / c.w)
+    crop = f"crop={_even(c.w)}:{_even(c.h)}:{_even(c.x) if c.x >= 2 else 0}:{_even(c.y) if c.y >= 2 else 0}"
+    pad = f",pad={cw + 12}:{ch + 12}:6:6:color={li.accent}" if li.border else ""
+    return f"{crop},scale={cw}:{ch}:flags=lanczos{_sharpen(cw / c.w)}{pad},setsar=1"
+
+
 def build(layout: str, li: LayoutInput) -> str:
     tail = f"fps={li.fps},format=yuv420p[v]"
     sw = li.src_w
@@ -160,38 +193,35 @@ def build(layout: str, li: LayoutInput) -> str:
     gx = li.gameplay_x
 
     if layout == "crop":
-        return f"[0:v]{_gameplay_crop(sw, sh, cy, H, gx)},scale={W}:{H}:flags=lanczos{_sharpen(H / sh)},setsar=1,{tail}"
+        return f"[0:v]{_game_chain(li, sw, sh, cy, H, gx, 'g')},{tail}"
 
     if layout == "stack":
         top, bottom = li.stack_top, H - li.stack_top
-        gcrop = _gameplay_crop(sw, sh, cy, bottom, gx)
         cam = _fit_panel(li.cam, W, top, "t") if li.cam else f"{_cam_crop(li)},scale={W}:{top}:flags=lanczos,setsar=1"
         return (
             f"[0:v]split=2[a][b];"
             f"[a]{cam}[top];"
-            f"[b]{gcrop},scale={W}:{bottom}:flags=lanczos{_sharpen(bottom / sh)},setsar=1[bot];"
+            f"[b]{_game_chain(li, sw, sh, cy, bottom, gx, 'g')}[bot];"
             f"[top][bot]vstack=inputs=2,{tail}"
         )
 
     if layout == "hand":
         top, bottom = li.stack_top, H - li.stack_top
-        gcrop = _gameplay_crop(sw, sh, cy, bottom, gx)
         return (
             f"[0:v]split=2[a][b];"
             f"[a]{_fit_panel(li.hand, W, top, 't')}[top];"
-            f"[b]{gcrop},scale={W}:{bottom}:flags=lanczos{_sharpen(bottom / sh)},setsar=1[bot];"
+            f"[b]{_game_chain(li, sw, sh, cy, bottom, gx, 'g')}[bot];"
             f"[top][bot]vstack=inputs=2,{tail}"
         )
 
     if layout == "face_hand":
         fh_, hh_ = li.face_hand_rows
         gh = H - fh_ - hh_
-        gcrop = _gameplay_crop(sw, sh, cy, gh, gx)
         return (
             f"[0:v]split=3[a][b][c];"
             f"[a]{_fit_panel(li.cam, W, fh_, 'f')}[f];"
             f"[b]{_fit_panel(li.hand, W, hh_, 'h')}[h];"
-            f"[c]{gcrop},scale={W}:{gh}:flags=lanczos{_sharpen(gh / sh)},setsar=1[g];"
+            f"[c]{_game_chain(li, sw, sh, cy, gh, gx, 'q')}[g];"
             f"[f][h][g]vstack=inputs=3,{tail}"
         )
 
@@ -210,28 +240,33 @@ def build(layout: str, li: LayoutInput) -> str:
         )
 
     if layout == "corner":
-        gcrop = _gameplay_crop(sw, sh, cy, H, gx)
-        c = li.cam
-        cw = li.corner_width
-        ch = _even(cw * c.h / c.w)
         return (
             f"[0:v]split=2[a][b];"
-            f"[a]{gcrop},scale={W}:{H}:flags=lanczos,setsar=1[bg];"
-            f"[b]crop={_even(c.w)}:{_even(c.h)}:{_even(c.x)}:{_even(c.y)},scale={cw}:{ch}:flags=lanczos,"
-            f"pad={cw + 12}:{ch + 12}:6:6:color={li.accent},setsar=1[cam];"
+            f"[a]{_game_chain(li, sw, sh, cy, H, gx, 'g')}[bg];"
+            f"[b]{_cam_overlay(li, li.corner_width)}[cam];"
             f"[bg][cam]overlay=36:170,{tail}"
+        )
+
+    if layout.startswith("custom") and li.custom and li.cam:
+        # eigenes Layout: Gameplay bildfüllend, Facecam frei platziert und skaliert
+        x, y, wf = li.custom
+        cw = max(40, _even(W * wf))
+        return (
+            f"[0:v]split=2[a][b];"
+            f"[a]{_game_chain(li, sw, sh, cy, H, gx, 'g')}[bg];"
+            f"[b]{_cam_overlay(li, cw)}[cam];"
+            f"[bg][cam]overlay={int(x * W)}:{int(y * H)},{tail}"
         )
 
     if layout == "top":
         # Gameplay füllt das ganze Bild (wie bei der Ecke), die Facecam sitzt oben mittig darüber
-        gcrop = _gameplay_crop(sw, sh, cy, H, gx)
         c = li.cam
         bw, bh = li.cam_box
         k = min(bw / c.w, bh / c.h)
         cw, ch = _even(c.w * k), _even(c.h * k)
         return (
             f"[0:v]split=2[a][b];"
-            f"[a]{gcrop},scale={W}:{H}:flags=lanczos{_sharpen(H / sh)},setsar=1[bg];"
+            f"[a]{_game_chain(li, sw, sh, cy, H, gx, 'g')}[bg];"
             f"[b]crop={_even(c.w)}:{_even(c.h)}:{_even(c.x) if c.x >= 2 else 0}:{_even(c.y) if c.y >= 2 else 0},"
             f"scale={cw}:{ch}:flags=lanczos{_sharpen(k)},"
             f"pad={cw + 12}:{ch + 12}:6:6:color={li.accent},setsar=1[cam];"

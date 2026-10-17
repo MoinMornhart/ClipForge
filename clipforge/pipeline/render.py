@@ -53,6 +53,9 @@ class RenderJob:
     smart_crop: bool = True
     cam_size: int = 40  # Facecam-/Handcam-Bereich oben: höchstens so viel % der Bildhöhe
     hook: str = ""  # Hook-Text, der in den ersten Sekunden eingeblendet wird ("" = keiner)
+    game: str = ""  # Spiel-Schlüssel (games.GAMES): bestimmt Ausschnitt und Breite des Gameplays
+    custom: tuple[float, float, float] | None = None  # eigenes Layout: Facecam x, y, Breite (0–1)
+    cam_border: bool = True  # Rahmen um die Facecam
 
 
 def encoder_args(codec: str, nvenc: bool) -> list[str]:
@@ -93,7 +96,13 @@ def plan(job: RenderJob, media: dict, work: Path) -> tuple[str, str]:
     fullcam = bool(cam_info and cam_info.mode == "fullcam")
     has_hand = bool(cam_info and cam_info.handcam)
     layout = layouts.resolve_layout(job.layout, has_cam, fullcam, has_hand)
-    li = layouts.LayoutInput(sw, sh, job.fps, fullcam=fullcam and not has_cam)
+    from clipforge.pipeline import games
+
+    game = games.profile(job.game)
+    li = layouts.LayoutInput(sw, sh, job.fps, fullcam=fullcam and not has_cam, zoom=game.zoom,
+                             custom=job.custom, border=job.cam_border)
+    if layout.startswith("custom") and not job.custom:
+        layout = "top"  # Vorlage fehlt (gelöscht): nächstbestes Layout
     clip = job.clip
     if has_cam:
         li.cam = fc.Rect.from_norm(cam_info.cam, sw, sh)
@@ -110,7 +119,8 @@ def plan(job: RenderJob, media: dict, work: Path) -> tuple[str, str]:
     elif layout == "hand" and li.hand:
         li.stack_top = layouts.panel_height(li.hand, lo, hi)
     content = cam_info.content if cam_info else None
-    if job.smart_crop and layout in ("crop", "stack", "corner", "top", "blur", "hand", "face_hand"):
+    if job.smart_crop and (layout in ("crop", "stack", "corner", "top", "blur", "hand", "face_hand")
+                           or layout.startswith("custom")):
         try:
             content = fc.clip_letterbox(job.src, clip.start, clip.end) or content
         except Exception as e:
@@ -120,7 +130,10 @@ def plan(job: RenderJob, media: dict, work: Path) -> tuple[str, str]:
         li.content_h = int((content[1] - content[0]) * sh)
     ch = li.content_h or sh
 
-    if layout in ("crop", "stack", "corner", "top", "hand", "face_hand") and job.smart_crop:
+    if game.focus == "center":
+        pass  # Spielfigur/Fadenkreuz in der Bildmitte: Ausschnitt bleibt mittig
+    elif (layout in ("crop", "stack", "corner", "top", "hand", "face_hand") or layout.startswith("custom")) \
+            and job.smart_crop:
         out_h = {"stack": H - li.stack_top, "hand": H - li.stack_top,
                  "face_hand": H - sum(li.face_hand_rows)}.get(layout, H)
         gw = layouts.gameplay_width(ch, W, out_h)
@@ -188,13 +201,14 @@ def _zero_start(graph: str) -> str:
 def preview_frame(src: Path, at: float, layout: str, cam: fc.Facecam | None, media: dict, out_png: Path,
                   ffmpeg_path: str = "", words: list[Word] | None = None,
                   subtitle_style: SubtitleStyle | None = None, cam_size: int = 40, hook: str = "",
-                  hook_mode: str = "hook") -> Path:
+                  hook_mode: str = "hook", game: str = "",
+                  custom: tuple[float, float, float] | None = None, cam_border: bool = True) -> Path:
     """Ein einzelnes 9:16-Bild mit dem gewählten Layout – für die Live-Vorschau im Facecam-Dialog.
     Ohne Nachführung und ohne Bildanalyse, damit es in unter einer Sekunde fertig ist."""
     work = Path(tempfile.mkdtemp(prefix="cf_preview_"))
     try:
         job = RenderJob(src, Clip(at, at + 1.0, at, []), out_png, layout, facecam=cam, smart_crop=False,
-                        track_face=False, cam_size=cam_size)
+                        track_face=False, cam_size=cam_size, game=game, custom=custom, cam_border=cam_border)
         resolved, graph = plan(job, media, work)
         graph = _zero_start(graph)
         if subtitle_style and subtitle_style.enabled and words:
@@ -208,7 +222,11 @@ def preview_frame(src: Path, at: float, layout: str, cam: fc.Facecam | None, med
         if hook.strip():
             hs = subtitle_style or SubtitleStyle()
             top = None
-            if hook_mode == "cover" and resolved == "top" and cam and cam.cam:
+            if hook_mode == "cover" and resolved.startswith("custom") and custom and cam and cam.cam:
+                r = fc.Rect.from_norm(cam.cam, media["width"], media["height"])
+                below = custom[1] * H + custom[2] * W * r.h / r.w + 40
+                top = int(below) if below < H * 0.7 else max(120, int(custom[1] * H) - 300)
+            elif hook_mode == "cover" and resolved == "top" and cam and cam.cam:
                 hi = layouts._even(H * min(50, max(25, cam_size)) / 100)
                 r = fc.Rect.from_norm(cam.cam, media["width"], media["height"])
                 top = int(48 + min(W * 0.62 / r.w, hi / r.h) * r.h) + 30  # direkt unter der Facecam

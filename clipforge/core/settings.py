@@ -92,6 +92,8 @@ class Settings:
     export_dir: str = field(default_factory=lambda: str(default_export_dir()))
     codec: str = "h264"  # "h264" | "hevc"
     fps: int = 30  # alt, wird nicht mehr genutzt (siehe export_fps)
+    # Eigene Layouts: {"Main": {"cam": [x, y, Breite]}} – Facecam-Position als Anteil von 1080×1920
+    custom_layouts: dict = field(default_factory=dict)
     cam_size: int = 40  # Facecam oben: höchstens so viel % der Bildhöhe (25–50), Rest ist Gameplay
     export_fps: int = 0  # 0 = wie die Quelle (höchstens 60), sonst 30/60
     use_nvenc: bool = True

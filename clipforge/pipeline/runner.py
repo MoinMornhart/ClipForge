@@ -50,6 +50,31 @@ _USER_FIELDS = ("id", "status", "title", "description", "hashtags", "layout", "s
 EXTRAS = ("subtitles", "hook", "watermark", "intro_outro", "loudnorm")
 
 
+def project_game(proj: Project) -> str:
+    """Spiel des Projekts: Auswahl des Nutzers vor automatischer Erkennung ("" = unbekannt)."""
+    chosen = proj.state.get("game", "auto")
+    return proj.state.get("game_detected", "") if chosen in ("", "auto") else ("" if chosen == "none" else chosen)
+
+
+def custom_for(clip: Clip, s: Settings, layout: str) -> tuple[float, float, float] | None:
+    """Facecam-Position des eigenen Layouts: Vorlage („custom:Name“) oder nur für diesen Clip („custom“)."""
+    if layout == "custom":
+        v = (clip.extras or {}).get("custom_cam")
+    elif layout.startswith("custom:"):
+        v = (s.custom_layouts.get(layout[7:]) or {}).get("cam")
+    else:
+        return None
+    return tuple(float(x) for x in v) if v and len(v) == 3 else None
+
+
+def custom_border(clip: Clip, s: Settings, layout: str) -> bool:
+    if layout == "custom":
+        return bool((clip.extras or {}).get("custom_border", True))
+    if layout.startswith("custom:"):
+        return bool((s.custom_layouts.get(layout[7:]) or {}).get("border", True))
+    return True
+
+
 def cam_size(clip: Clip, s: Settings) -> int:
     """Größe des Facecam-Bereichs oben in % der Bildhöhe: Clip-Einstellung vor Grundeinstellung."""
     return int((clip.extras or {}).get("cam_size", s.cam_size))
@@ -132,9 +157,22 @@ class Pipeline:
             raise
         proj.set_source(src, media)
         proj.state["offset"] = src.offset if (section and importer.is_url(ref)) else 0.0
+        self.detect_game(proj)
         proj.mark("import")
         self.progress("import", 1.0, f"Importiert: {src.title}")
         return proj
+
+    def detect_game(self, proj: Project) -> str:
+        """Spiel aus Plattform-Daten oder Titel erkennen und im Projekt merken."""
+        from clipforge.pipeline import games
+
+        src = proj.source
+        key, name = games.detect(src.platform, src.url, src.title) if src else (None, "")
+        proj.state["game_detected"], proj.state["game_name"] = key or "", name
+        proj.save()
+        if key:
+            log.info("Spiel erkannt: %s", name)
+        return key or ""
 
     # 2. Transkript
     def backend(self):
@@ -464,7 +502,9 @@ class Pipeline:
             watermark=s.watermark if extra_on(clip, s, "watermark") else "", watermark_pos=s.watermark_pos,
             watermark_opacity=s.watermark_opacity, intro=s.intro if io else "", outro=s.outro if io else "",
             track_face=s.track_face, smart_crop=s.smart_crop, cam_size=cam_size(clip, s),
-            hook=clip.hook if extra_on(clip, s, "hook") else "")
+            hook=clip.hook if extra_on(clip, s, "hook") else "", game=project_game(proj),
+            custom=custom_for(clip, s, clip.layout or s.default_layout),
+            cam_border=custom_border(clip, s, clip.layout or s.default_layout))
 
     def export(self, proj: Project, clips: list[Clip] | None = None, only_approved: bool = False) -> list[Path]:
         all_clips = proj.load_clips()
@@ -493,7 +533,8 @@ class Pipeline:
                     render.preview_frame(src.path, render.cover_time(src.path, clip), job.layout, cam, proj.media,
                                          out.with_name(out.stem + "_thumbnail.jpg"), self.s.ffmpeg_path,
                                          subtitle_style=st, cam_size=job.cam_size,
-                                         hook=clip.hook or clip.title, hook_mode="cover")
+                                         hook=clip.hook or clip.title, hook_mode="cover", game=job.game,
+                                         custom=job.custom)
                 except Exception as e:  # Thumbnail ist Zugabe: Export nie daran scheitern lassen
                     log.warning("Thumbnail für %s nicht erstellt: %s", clip.id, e)
             clip.status, clip.export_path = STATUS_EXPORTED, str(out)

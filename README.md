@@ -257,6 +257,10 @@ Unter **Einstellungen → Clips → Bevorzugte Clip-Arten** legst du fest, was d
 | **Facecam + Handcam + Gameplay** | drei Ebenen untereinander (automatisch, wenn beides erkannt wurde) |
 | **Nur Handcam** | Handcam groß, unscharfer Hintergrund |
 
+**Eigenes Layout:** Im Clip-Editor neben der Layout-Auswahl auf **„Anpassen …“** klicken. Die Facecam lässt sich frei verschieben und an den Ecken oder per Mausrad vergrößern und verkleinern, das Gameplay füllt das ganze Bild. Rosa Hilfslinien zeigen wie in Word, wenn die Facecam mittig oder am Rand sitzt. Speichern geht **nur für diesen Clip**, **als Vorlage** unter eigenem Namen (z. B. „Main“) oder **als Standard** für alle Clips. Vorlagen verwalten: Einstellungen → Facecam-Profile.
+
+**Spiel erkennen:** ClipForge liest das Spiel aus den Daten von Kick (Kategorie) und Twitch, sonst aus dem Titel. Bei Third-Person-Spielen wie Fortnite oder GTA bleibt der Ausschnitt mittig auf der eigenen Figur und zeigt etwas mehr Breite, damit Skin und Umgebung zu sehen sind; Shooter wie Valorant bleiben aufs Fadenkreuz zentriert. Wird nichts erkannt (z. B. bei lokalen Dateien), wählst du das Spiel oben auf der Clip-Seite aus.
+
 Passt ein gewähltes Layout nicht zur Situation (z. B. „Cam-Ecke“ ohne Facecam-Fenster), nimmt ClipForge automatisch das nächstbeste. Funktioniert auch mit Handyvideos im Hochformat und mit 1440p/4K-Quellen.
 
 **So wird die Facecam gefunden:**
