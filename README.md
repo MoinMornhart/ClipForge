@@ -121,7 +121,7 @@ cd ClipForge
 install.bat
 ```
 
-`install.bat` legt eine Python-Umgebung unter `%LOCALAPPDATA%\ClipForge` an, installiert alle Pakete (inkl. CUDA-Bibliotheken), bei Bedarf FFmpeg und eine Desktop-Verknüpfung. Die Setup.exe selbst baust du mit `powershell -ExecutionPolicy Bypass -File installeruild.ps1` (braucht Inno Setup 6 und PyInstaller).
+`install.bat` legt eine Python-Umgebung unter `%LOCALAPPDATA%\ClipForge` an, installiert alle Pakete (inkl. CUDA-Bibliotheken), bei Bedarf FFmpeg und eine Desktop-Verknüpfung. Die Setup.exe selbst baust du mit `powershell -ExecutionPolicy Bypass -File installer\build.ps1` (braucht Inno Setup 6 und PyInstaller). Ein Release samt Setup.exe veröffentlichst du auf GitHub unter **Actions → Release → Run workflow**: Version in `clipforge/__init__.py` und Notizen in `installer/RELEASE.md` vorher anpassen.
 
 ---
 

@@ -8,7 +8,8 @@ $build = Join-Path $env:LOCALAPPDATA "ClipForge\build"   # viele Zwischendateien
 $stage = Join-Path $build "stage"
 $cache = Join-Path $build "cache"
 $dist = Join-Path $root "dist"
-$devPy = Join-Path $env:LOCALAPPDATA "ClipForge\venv\Scripts\python.exe"
+# Python mit PyInstaller: die Entwicklungsumgebung, auf GitHub (Release-Workflow) per CLIPFORGE_BUILD_PY
+$devPy = if ($env:CLIPFORGE_BUILD_PY) { $env:CLIPFORGE_BUILD_PY } else { Join-Path $env:LOCALAPPDATA "ClipForge\venv\Scripts\python.exe" }
 $pyVer = "3.11.9"   # letzte 3.11-Version mit offiziellem Windows-Embed-Paket
 
 $version = (Select-String -Path (Join-Path $root "clipforge\__init__.py") -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
