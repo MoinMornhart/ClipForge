@@ -118,3 +118,44 @@ def test_layout_editor_stack(app):
     assert dlg.mode == "once" and dlg.stack and not dlg.border
     dlg.stack_cb.setChecked(False)
     assert dlg.canvas.split() == 0 and dlg.stack_hint.text() == ""
+
+
+@pytest.mark.parametrize("size", [(890, 690), (1000, 760), (1230, 870), (1700, 1050)])
+def test_clip_editor_controls_never_overlap(app, size):
+    """Fenstermodus: Knöpfe und Schalter unter dem Player brechen um statt sich zu überlagern."""
+    import time
+
+    from PySide6.QtCore import QPoint, QRect
+
+    from clipforge.pipeline.clips import Clip
+    from clipforge.pipeline.importer import Source
+    from clipforge.pipeline.project import Project
+    from clipforge.ui.clips_page import ClipsPage
+
+    p = Project.for_source("test://fenster")
+    p.set_source(Source(path=Path("C:/gibt/es/nicht/f.mp4"), title="Ein ziemlich langer Streamtitel", streamer="Bär",
+                        date="2026-10-20", platform="Kick"),
+                 {"duration": 60.0, "width": 1920, "height": 1080, "fps": 30.0, "has_audio": True})
+    p.save_clips([Clip(0, 20, 18, ["Sprachbefehl: clip das"], title="Ein Titel", score=8.0)])
+    cp = ClipsPage(Settings())
+    cp.resize(*size)
+    cp.show()
+    cp.open_project(p.id)
+    end = time.time() + 0.5
+    while time.time() < end:
+        _spin(app, 5)
+    assert cp.right_stack.currentIndex() == 1
+    content = cp.lower.widget()
+    widgets = [cp.play_btn, *cp.nudge_btns, cp.layout_box.parentWidget(), cp.preview_btn,
+               *cp.extra_boxes.values(), cp.cam_slider.parentWidget(), cp.extras_all, cp.state_lbl,
+               cp.approve_btn, cp.reject_btn]
+    rects = [QRect(w.mapTo(content, QPoint(0, 0)), w.size()) for w in widgets]
+    width = cp.lower.viewport().width()
+    for w, r in zip(widgets, rects):
+        assert r.left() >= 0 and r.right() < width + 1, (type(w).__name__, r, width)
+    for i in range(len(rects)):
+        for j in range(i + 1, len(rects)):
+            assert not rects[i].intersects(rects[j]), (widgets[i], widgets[j], rects[i], rects[j])
+    # Player und 9:16-Vorschau liegen über dem Zeitregler, nicht darauf
+    assert cp.pv916.mapTo(cp, QPoint(0, cp.pv916.height())).y() <= cp.range.mapTo(cp, QPoint(0, 0)).y()
+    assert cp.lower.widget().width() <= cp.lower.viewport().width()  # nichts ragt rechts aus dem Bereich

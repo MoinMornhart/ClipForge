@@ -26,7 +26,7 @@ from clipforge.pipeline.runner import Pipeline
 from clipforge.pipeline.transcribe import Word
 from clipforge.ui import theme
 from clipforge.ui.library import VodLibrary
-from clipforge.ui.widgets import RangeSlider, RectSelector, bgr_to_qimage, fmt_time
+from clipforge.ui.widgets import FitScrollArea, FlowLayout, RangeSlider, RectSelector, bgr_to_qimage, fmt_time
 from clipforge.ui.worker import Task
 
 log = get_logger("ui.clips")
@@ -360,7 +360,7 @@ class ClipsPage(QWidget):
         rl = QVBoxLayout(right)
         rl.setContentsMargins(12, 0, 0, 0)
         self.video = QVideoWidget()
-        self.video.setMinimumHeight(300)
+        self.video.setMinimumHeight(220)
         self.video.setStyleSheet("background:#000;")
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
@@ -374,10 +374,14 @@ class ClipsPage(QWidget):
         self.poster = QLabel()
         self.poster.setAlignment(Qt.AlignCenter)
         self.poster.setStyleSheet("background:#000;")
-        self.poster.setMinimumHeight(300)
+        self.poster.setMinimumSize(200, 220)
+        self.poster.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)  # Bildgröße ≠ Mindestgröße
         self.view = QStackedWidget()
         self.view.addWidget(self.poster)
         self.view.addWidget(self.video)
+        # Player bekommt den Platz, der übrig bleibt – nicht seine Videogröße (sonst fehlt er der Bedienung darunter)
+        self.view.setMinimumHeight(220)
+        self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         viewrow = QHBoxLayout()
         viewrow.setSpacing(10)
         viewrow.addWidget(self.view, 1)
@@ -390,18 +394,23 @@ class ClipsPage(QWidget):
         self.pv916.setObjectName("muted")
         self.pv916.setAlignment(Qt.AlignCenter)
         self.pv916.setFixedWidth(200)
-        self.pv916.setMinimumHeight(300)
+        self.pv916.setMinimumHeight(220)
+        self.pv916.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Ignored)
         self.pv916.setStyleSheet(f"background:#000; border:1px solid {theme.LINE}; border-radius:8px;")
         self.pv916.setToolTip("Mittleres Bild des Clips im gewählten Layout – genau so wird exportiert")
         side.addWidget(cap)
         side.addWidget(self.pv916, 1)
         viewrow.addLayout(side)
-        rl.addLayout(viewrow, 3)
+        rl.addLayout(viewrow, 1)
         self.range = RangeSlider()
         self.range.changed.connect(self._range_changed)
         self.range.seek.connect(lambda t: self.player.setPosition(int(t * 1000)))
         rl.addWidget(self.range)
-        ctl = QHBoxLayout()
+        # Bedienung darunter: Zeilen brechen im kleinen Fenster um, der Bereich scrollt, wenn die Höhe nicht reicht
+        lower = QWidget()
+        ll = QVBoxLayout(lower)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ctl = FlowLayout()
         self.play_btn = QPushButton("▶ Abspielen")
         self.play_btn.clicked.connect(self._toggle_play)
         nudge = []
@@ -425,14 +434,18 @@ class ClipsPage(QWidget):
         self.nudge_btns = nudge
         for b in nudge:
             ctl.addWidget(b)
-        ctl.addStretch(1)
-        ctl.addWidget(QLabel("Layout"))
-        ctl.addWidget(self.layout_box)
-        ctl.addWidget(self.layout_edit_btn)
+        ctl.addStretch()
+        lay_group = QWidget()  # Beschriftung, Auswahl und „Anpassen“ bleiben beim Umbrechen zusammen
+        lg = QHBoxLayout(lay_group)
+        lg.setContentsMargins(0, 0, 0, 0)
+        lg.addWidget(QLabel("Layout"))
+        lg.addWidget(self.layout_box)
+        lg.addWidget(self.layout_edit_btn)
+        ctl.addWidget(lay_group)
         ctl.addWidget(self.preview_btn)
-        rl.addLayout(ctl)
+        ll.addLayout(ctl)
         # Extras nur für diesen Clip an/aus (Grundeinstellung unter Einstellungen → Untertitel / Export)
-        ext = QHBoxLayout()
+        ext = FlowLayout()
         ext.addWidget(QLabel("Im Clip:"))
         self.extra_boxes: dict[str, QCheckBox] = {}
         for key, label, tip in (("subtitles", "Untertitel", "Untertitel in diesen Clip einbrennen"),
@@ -445,7 +458,6 @@ class ClipsPage(QWidget):
             cb.toggled.connect(lambda on, k=key: self._extra_changed(k, on))
             self.extra_boxes[key] = cb
             ext.addWidget(cb)
-        ext.addSpacing(14)
         from PySide6.QtWidgets import QSlider
 
         self.cam_lbl = QLabel("Facecam 40 %")
@@ -455,17 +467,21 @@ class ClipsPage(QWidget):
         self.cam_slider.setFixedWidth(130)
         self.cam_slider.setToolTip(self.cam_lbl.toolTip())
         self.cam_slider.valueChanged.connect(self._cam_size_changed)
-        ext.addWidget(self.cam_lbl)
-        ext.addWidget(self.cam_slider)
-        ext.addStretch(1)
+        cam_group = QWidget()  # Beschriftung und Regler bleiben zusammen
+        cg = QHBoxLayout(cam_group)
+        cg.setContentsMargins(14, 0, 0, 0)
+        cg.addWidget(self.cam_lbl)
+        cg.addWidget(self.cam_slider)
+        ext.addWidget(cam_group)
+        ext.addStretch()
         self.extras_all = QPushButton("Für alle Clips übernehmen")
         self.extras_all.setToolTip("Diese Schalter für alle Clips dieses VODs setzen")
         self.extras_all.clicked.connect(self._extras_to_all)
         ext.addWidget(self.extras_all)
-        rl.addLayout(ext)
+        ll.addLayout(ext)
 
         # Status-Leiste: Freigeben/Verwerfen immer sichtbar
-        act = QHBoxLayout()
+        act = FlowLayout()
         self.state_lbl = QLabel("")
         self.state_lbl.setTextFormat(Qt.PlainText)
         self.state_lbl.setObjectName("h2")
@@ -477,10 +493,11 @@ class ClipsPage(QWidget):
         self.reject_btn.setObjectName("bad")
         self.reject_btn.setToolTip("Strg+Entf")
         self.reject_btn.clicked.connect(lambda: self._set_status(STATUS_REJECTED))
-        act.addWidget(self.state_lbl, 1)
+        act.addWidget(self.state_lbl)
+        act.addStretch()
         act.addWidget(self.approve_btn)
         act.addWidget(self.reject_btn)
-        rl.addLayout(act)
+        ll.addLayout(act)
 
         # Bearbeiten in Reitern statt alles auf einmal
         self.edit_tabs = QTabWidget()
@@ -524,7 +541,9 @@ class ClipsPage(QWidget):
         apply_tr.clicked.connect(self._apply_transcript)
         tr.addWidget(apply_tr, 0, Qt.AlignRight)
         self.edit_tabs.addTab(subs, "Untertitel")
-        rl.addWidget(self.edit_tabs)
+        ll.addWidget(self.edit_tabs, 1)
+        self.lower = FitScrollArea(lower)
+        rl.addWidget(self.lower)
 
         from PySide6.QtGui import QKeySequence, QShortcut
 
