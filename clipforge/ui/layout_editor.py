@@ -1,20 +1,47 @@
 """Eigenes Layout: Facecam frei auf dem 9:16-Bild verschieben und skalieren, mit Hilfslinien wie in Word.
 
 Ergebnis: (x, y, Breite) als Anteil von 1080×1920. Speichern als Vorlage (eigener Name, optional als Standard)
-oder nur für den aktuellen Clip.
+oder nur für den aktuellen Clip. Optional „Facecam oben, Gameplay unten“: vom oberen Rand bis zur Unterkante der
+Facecam ist das Spiel unscharf, das Gameplay beginnt darunter – die Größe der Facecam bestimmt die Aufteilung.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QDialog, QHBoxLayout, QInputDialog, QLabel, QMessageBox, QPushButton,
-                               QSlider, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QDialog, QGraphicsBlurEffect, QGraphicsPixmapItem, QGraphicsScene,
+                               QHBoxLayout, QInputDialog, QLabel, QMessageBox, QPushButton, QSlider, QVBoxLayout,
+                               QWidget)
 
+from clipforge.pipeline.layouts import stack_split
 from clipforge.ui import theme
 
 SNAP = 8  # Pixel im Editor, ab denen die Facecam an Mitte/Rand einrastet
 MARGIN = 0.035  # Sicherheitsabstand zum Rand (Anteil der Breite)
+BORDER = 12 / 1920  # Rahmen um die Facecam im Export (Anteil der Höhe)
+
+
+def _cover(src: QRectF, target: QRectF) -> QRectF:
+    """Mittiger Ausschnitt aus src im Seitenverhältnis von target – wie der Gameplay-Ausschnitt im Export."""
+    a = target.width() / max(1.0, target.height())
+    w, h = (src.height() * a, src.height()) if src.height() * a <= src.width() else (src.width(), src.width() / a)
+    return QRectF(src.x() + (src.width() - w) / 2, src.y() + (src.height() - h) / 2, w, h)
+
+
+def _blurred(pix: QPixmap, radius: float) -> QPixmap:
+    """Weichgezeichnete Kopie; darunter das Original, damit die Ränder nicht abdunkeln."""
+    item = QGraphicsPixmapItem(pix)
+    blur = QGraphicsBlurEffect()
+    blur.setBlurRadius(radius)
+    blur.setBlurHints(QGraphicsBlurEffect.QualityHint)
+    item.setGraphicsEffect(blur)
+    scene = QGraphicsScene()
+    scene.addItem(item)
+    out = pix.copy()
+    p = QPainter(out)
+    scene.render(p, QRectF(out.rect()), QRectF(pix.rect()))
+    p.end()
+    return out
 
 
 class CamCanvas(QWidget):
@@ -26,8 +53,12 @@ class CamCanvas(QWidget):
         super().__init__(parent)
         self.setFixedSize(405, 720)
         self.setMouseTracking(True)
-        self.bg: QPixmap | None = None
+        self.bg: QPixmap | None = None  # Gameplay im 9:16-Ausschnitt
+        self.src: QPixmap | None = None  # ganzes Spielbild (für „Gameplay unten“)
+        self.src_blur: QPixmap | None = None
         self.cam: QPixmap | None = None
+        self.stack = False  # Facecam oben (dahinter Spiel unscharf), Gameplay darunter
+        self.border = True
         self.aspect = cam_aspect  # Breite / Höhe der Facecam
         self.x, self.y, self.w = value
         self.guides: list[tuple[str, float]] = []
@@ -43,6 +74,20 @@ class CamCanvas(QWidget):
 
     def value(self) -> tuple[float, float, float]:
         return round(self.x, 4), round(self.y, 4), round(self.w, 4)
+
+    def set_background(self, pix: QPixmap):
+        self.bg = pix
+        self.update()
+
+    def set_source(self, pix: QPixmap):
+        """Ganzes Spielbild: daraus entstehen bei „Gameplay unten“ der Gameplay-Ausschnitt und der unscharfe Bereich."""
+        self.src = pix.scaledToWidth(min(960, pix.width()), Qt.SmoothTransformation)
+        self.src_blur = _blurred(self.src, 22)
+        self.update()
+
+    def split(self) -> float:
+        """Anteil der Bildhöhe für den Facecam-Bereich bei „Gameplay unten“ (0 = Gameplay bildfüllend)."""
+        return stack_split(self.y, self.cam_height_frac() + (BORDER if self.border else 0)) if self.stack else 0.0
 
     def set_width(self, w: float, keep_center: bool = True):
         r = self._px_rect()
@@ -90,7 +135,14 @@ class CamCanvas(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         W, H = self.width(), self.height()
-        if self.bg and not self.bg.isNull():
+        top = self.split() * H
+        if self.stack and self.src and not self.src.isNull():
+            # wie im Export: unten der Gameplay-Ausschnitt, darüber bis zur Facecam dasselbe Gameplay unscharf
+            band, game = QRectF(0, 0, W, top), QRectF(0, top, W, H - top)
+            crop = _cover(QRectF(self.src.rect()), game)
+            p.drawPixmap(band, self.src_blur, _cover(crop, band))
+            p.drawPixmap(game, self.src, crop)
+        elif self.bg and not self.bg.isNull():
             p.drawPixmap(self.rect(), self.bg)
         else:
             p.fillRect(self.rect(), QColor("#0b0d11"))
@@ -171,23 +223,25 @@ class CamCanvas(QWidget):
 
 
 class LayoutEditor(QDialog):
-    """Ergebnis nach exec(): self.mode = "once" | "template" | "default", self.name, self.value, self.border."""
+    """Ergebnis nach exec(): self.mode = "once" | "template" | "default", self.name, self.value, self.border,
+    self.stack."""
 
     def __init__(self, cam_pix: QPixmap, cam_aspect: float, value: tuple[float, float, float], name: str = "",
-                 border: bool = True, parent=None):
+                 border: bool = True, stack: bool = False, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Eigenes Layout")
-        self.mode, self.name, self.value, self.border = "", name, value, border
+        self.mode, self.name, self.value, self.border, self.stack = "", name, value, border, stack
         lay = QHBoxLayout(self)
         self.canvas = CamCanvas(cam_aspect, value)
         self.canvas.cam = cam_pix
+        self.canvas.stack, self.canvas.border = stack, border
         lay.addWidget(self.canvas)
         side = QVBoxLayout()
         h = QLabel("Facecam frei platzieren")
         h.setObjectName("h2")
         info = QLabel("Ziehen zum Verschieben, an den Ecken ziehen oder Mausrad zum Vergrößern/Verkleinern. "
-                      "Rosa Linien zeigen, wenn die Facecam mittig oder am Rand sitzt. Das Gameplay füllt das "
-                      "ganze Bild.")
+                      "Rosa Linien zeigen, wenn die Facecam mittig oder am Rand sitzt. Ohne „Facecam oben, "
+                      "Gameplay unten“ füllt das Gameplay das ganze Bild.")
         info.setWordWrap(True)
         info.setObjectName("muted")
         side.addWidget(h)
@@ -208,7 +262,18 @@ class LayoutEditor(QDialog):
         side.addLayout(quick)
         self.border_cb = QCheckBox("Rahmen um die Facecam")
         self.border_cb.setChecked(border)
+        self.border_cb.toggled.connect(self._options_changed)
         side.addWidget(self.border_cb)
+        self.stack_cb = QCheckBox("Facecam oben, Gameplay unten")
+        self.stack_cb.setChecked(stack)
+        self.stack_cb.setToolTip("Vom oberen Rand bis zur Unterkante der Facecam ist das Spiel unscharf, das Gameplay "
+                                 "beginnt erst darunter. Größe und Position der Facecam bestimmen die Aufteilung.")
+        self.stack_cb.toggled.connect(self._options_changed)
+        side.addWidget(self.stack_cb)
+        self.stack_hint = QLabel("")
+        self.stack_hint.setObjectName("muted")
+        self.stack_hint.setWordWrap(True)
+        side.addWidget(self.stack_hint)
         side.addStretch(1)
         once = QPushButton("Nur für diesen Clip")
         once.setToolTip("Gilt nur für den aktuellen Clip, wird nicht als Vorlage gespeichert")
@@ -229,12 +294,21 @@ class LayoutEditor(QDialog):
         self._sync()
 
     def set_background(self, pix: QPixmap):
-        self.canvas.bg = pix
+        self.canvas.set_background(pix)
+
+    def set_source(self, pix: QPixmap):
+        self.canvas.set_source(pix)
+
+    def _options_changed(self, _=None):
+        self.canvas.border, self.canvas.stack = self.border_cb.isChecked(), self.stack_cb.isChecked()
         self.canvas.update()
+        self._sync()
 
     def _sync(self):
         w = self.canvas.w
         self.size_lbl.setText(f"Größe: {w * 100:.0f} % der Breite")
+        pct = round(self.canvas.split() * 100)
+        self.stack_hint.setText(f"Facecam-Bereich {pct} %, Gameplay {100 - pct} % der Höhe" if pct else "")
         self.size.blockSignals(True)
         self.size.setValue(int(round(w * 100)))
         self.size.blockSignals(False)
@@ -266,4 +340,5 @@ class LayoutEditor(QDialog):
                 return
             self.name = name
         self.mode, self.value, self.border = mode, self.canvas.value(), self.border_cb.isChecked()
+        self.stack = self.stack_cb.isChecked()
         self.accept()

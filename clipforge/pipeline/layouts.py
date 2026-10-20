@@ -26,6 +26,8 @@ LAYOUTS = {
 }
 NEEDS_CAM = {"stack", "corner", "cam", "top"}
 NEEDS_HAND = {"hand", "face_hand", "hand_only"}
+# eigenes Layout „Facecam oben, Gameplay unten“: Höhe des Facecam-Bereichs höchstens/mindestens so viel vom Bild
+STACK_MIN, STACK_MAX = 0.1, 0.75
 
 
 @dataclass
@@ -50,6 +52,7 @@ class LayoutInput:
     zoom: float = 1.0  # < 1: breiterer Gameplay-Ausschnitt (je Spiel, z. B. Fortnite: Skin samt Umgebung)
     custom: tuple[float, float, float] | None = None  # eigenes Layout: Facecam x, y, Breite (Anteil von 1080×1920)
     border: bool = True  # Rahmen um die Facecam (Ecke, oben drüber, eigenes Layout)
+    custom_stack: bool = False  # eigenes Layout: Facecam oben (dahinter Spiel unscharf), Gameplay darunter
     accent: str = "0x9146FF"
 
 
@@ -176,6 +179,22 @@ def _game_chain(li: LayoutInput, sw: int, sh: int, cy: int, out_h: int, gx: int 
             f"[{tag}b][{tag}f]overlay=0:(H-h)/2")
 
 
+def stack_split(y: float, h: float) -> float:
+    """Eigenes Layout „Facecam oben, Gameplay unten“: Anteil der Bildhöhe für den Facecam-Bereich – vom oberen
+    Rand bis zur Unterkante der Facecam (y + h als Anteil), begrenzt, damit genug Gameplay bleibt."""
+    return min(STACK_MAX, max(STACK_MIN, y + h))
+
+
+def custom_top(li: LayoutInput) -> int:
+    """Höhe des Facecam-Bereichs in px beim eigenen Layout „Facecam oben, Gameplay unten“ (0 = Gameplay
+    bildfüllend). Zählt bis zur Unterkante der Facecam samt Rahmen."""
+    if not (li.custom_stack and li.custom and li.cam):
+        return 0
+    cw = max(40, _even(W * li.custom[2]))
+    ch = _even(cw * li.cam.h / li.cam.w) + (12 if li.border else 0)
+    return _even(stack_split(li.custom[1], ch / H) * H)
+
+
 def _cam_overlay(li: LayoutInput, cw: int) -> str:
     """Facecam auf Breite cw (Seitenverhältnis bleibt), optional mit Rahmen in der Akzentfarbe."""
     c = li.cam
@@ -248,12 +267,23 @@ def build(layout: str, li: LayoutInput) -> str:
         )
 
     if layout.startswith("custom") and li.custom and li.cam:
-        # eigenes Layout: Gameplay bildfüllend, Facecam frei platziert und skaliert
+        # eigenes Layout: Facecam frei platziert und skaliert. Gameplay bildfüllend – oder bei „Facecam oben,
+        # Gameplay unten“ erst unter der Facecam, darüber dasselbe Gameplay unscharf (klein gerechnet, spart Zeit)
         x, y, wf = li.custom
         cw = max(40, _even(W * wf))
+        top = custom_top(li)
+        if top:
+            bw, bh = _even(W / 4), _even(top / 4)
+            r = min(10, min(bw, bh) // 4)  # boxblur: Radius höchstens ein Viertel der kleineren Seite (Farbebene)
+            game = (f"[0:v]split=2[a][b];"
+                    f"[a]{_game_chain(li, sw, sh, cy, H - top, gx, 'g')},split=2[bot][s];"
+                    f"[s]scale={bw}:{bh}:force_original_aspect_ratio=increase,crop={bw}:{bh},boxblur={r}:2,"
+                    f"scale={W}:{top},setsar=1[top];"
+                    f"[top][bot]vstack=inputs=2[bg];")
+        else:
+            game = f"[0:v]split=2[a][b];[a]{_game_chain(li, sw, sh, cy, H, gx, 'g')}[bg];"
         return (
-            f"[0:v]split=2[a][b];"
-            f"[a]{_game_chain(li, sw, sh, cy, H, gx, 'g')}[bg];"
+            f"{game}"
             f"[b]{_cam_overlay(li, cw)}[cam];"
             f"[bg][cam]overlay={int(x * W)}:{int(y * H)},{tail}"
         )

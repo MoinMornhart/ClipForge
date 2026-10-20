@@ -574,7 +574,8 @@ class SettingsPage(QWidget):
             x, y, w = s.custom_layouts[name].get("cam", [0, 0, 0])
             self.custom_tbl.setItem(r, 0, QTableWidgetItem(name + ("  (Standard)" if s.default_layout ==
                                                                    f"custom:{name}" else "")))
-            self.custom_tbl.setItem(r, 1, QTableWidgetItem(f"{w * 100:.0f} % breit, oben {y * 100:.0f} %"))
+            stack = ", Gameplay darunter" if s.custom_layouts[name].get("stack") else ""
+            self.custom_tbl.setItem(r, 1, QTableWidgetItem(f"{w * 100:.0f} % breit, oben {y * 100:.0f} %{stack}"))
             b = QPushButton("Löschen")
             b.clicked.connect(lambda _=False, n=name: self._delete_custom(n))
             self.custom_tbl.setCellWidget(r, 2, b)

@@ -67,12 +67,22 @@ def custom_for(clip: Clip, s: Settings, layout: str) -> tuple[float, float, floa
     return tuple(float(x) for x in v) if v and len(v) == 3 else None
 
 
-def custom_border(clip: Clip, s: Settings, layout: str) -> bool:
+def _custom_opt(clip: Clip, s: Settings, layout: str, key: str, default):
+    """Einstellung des eigenen Layouts: beim Clip als „custom_<key>“, bei einer Vorlage als „<key>“."""
     if layout == "custom":
-        return bool((clip.extras or {}).get("custom_border", True))
+        return (clip.extras or {}).get(f"custom_{key}", default)
     if layout.startswith("custom:"):
-        return bool((s.custom_layouts.get(layout[7:]) or {}).get("border", True))
-    return True
+        return (s.custom_layouts.get(layout[7:]) or {}).get(key, default)
+    return default
+
+
+def custom_border(clip: Clip, s: Settings, layout: str) -> bool:
+    return bool(_custom_opt(clip, s, layout, "border", True))
+
+
+def custom_stack(clip: Clip, s: Settings, layout: str) -> bool:
+    """Eigenes Layout als „Facecam oben, Gameplay unten“: bis zur Facecam Spiel unscharf, Gameplay darunter."""
+    return bool(_custom_opt(clip, s, layout, "stack", False))
 
 
 def cam_size(clip: Clip, s: Settings) -> int:
@@ -504,7 +514,8 @@ class Pipeline:
             track_face=s.track_face, smart_crop=s.smart_crop, cam_size=cam_size(clip, s),
             hook=clip.hook if extra_on(clip, s, "hook") else "", game=project_game(proj),
             custom=custom_for(clip, s, clip.layout or s.default_layout),
-            cam_border=custom_border(clip, s, clip.layout or s.default_layout))
+            cam_border=custom_border(clip, s, clip.layout or s.default_layout),
+            cam_stack=custom_stack(clip, s, clip.layout or s.default_layout))
 
     def export(self, proj: Project, clips: list[Clip] | None = None, only_approved: bool = False) -> list[Path]:
         all_clips = proj.load_clips()
@@ -534,7 +545,7 @@ class Pipeline:
                                          out.with_name(out.stem + "_thumbnail.jpg"), self.s.ffmpeg_path,
                                          subtitle_style=st, cam_size=job.cam_size,
                                          hook=clip.hook or clip.title, hook_mode="cover", game=job.game,
-                                         custom=job.custom)
+                                         custom=job.custom, cam_border=job.cam_border, cam_stack=job.cam_stack)
                 except Exception as e:  # Thumbnail ist Zugabe: Export nie daran scheitern lassen
                     log.warning("Thumbnail für %s nicht erstellt: %s", clip.id, e)
             clip.status, clip.export_path = STATUS_EXPORTED, str(out)
