@@ -1,12 +1,13 @@
-"""Eigene Bedienelemente: Ablagefläche, Doppel-Schieberegler, Rechteck-Auswahl."""
+"""Eigene Bedienelemente: Ablagefläche, Doppel-Schieberegler, Rechteck-Auswahl, umbrechende Knopfzeile."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRect, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QMouseEvent, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QFrame, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QFrame, QLabel, QLayout, QLayoutItem, QScrollArea, QSizePolicy, QSpacerItem,
+                               QVBoxLayout, QWidget)
 
 from clipforge.ui import theme
 
@@ -67,6 +68,132 @@ class DropZone(QFrame):
                 return
         if md.hasText():
             self.dropped.emit(md.text().strip())
+
+
+class FlowLayout(QLayout):
+    """Knopfzeile, die bei Platzmangel in die nächste Zeile umbricht, statt Knöpfe übereinanderzuschieben
+    (kleines Fenster). addStretch() schiebt die folgenden Elemente nach rechts – wie bei QHBoxLayout, solange
+    sie in derselben Zeile landen."""
+
+    def __init__(self, parent=None, spacing: int = 8, line_spacing: int = 6):
+        super().__init__(parent)
+        self._items: list[QLayoutItem] = []
+        self._h, self._v = spacing, line_spacing
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item: QLayoutItem):
+        self._items.append(item)
+
+    def addStretch(self):
+        self.addItem(QSpacerItem(0, 0, QSizePolicy.Expanding, QSizePolicy.Minimum))
+
+    def addSpacing(self, w: int):
+        self.addItem(QSpacerItem(w, 0, QSizePolicy.Fixed, QSizePolicy.Minimum))
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, i: int):
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i: int):
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, w: int) -> int:
+        return self._arrange(QRect(0, 0, w, 0), apply=False)
+
+    def setGeometry(self, rect: QRect):
+        super().setGeometry(rect)
+        self._arrange(rect, apply=True)
+
+    def sizeHint(self) -> QSize:
+        """Alles in einer Zeile."""
+        items = self._visible()
+        m = self.contentsMargins()
+        w = sum(it.sizeHint().width() for it in items) + self._h * max(0, len(items) - 1)
+        h = max((it.sizeHint().height() for it in items), default=0)
+        return QSize(w + m.left() + m.right(), h + m.top() + m.bottom())
+
+    def minimumSize(self) -> QSize:
+        """Das größte einzelne Element – die Höhe bei gegebener Breite liefert heightForWidth."""
+        items = self._visible()
+        m = self.contentsMargins()
+        w = max((it.minimumSize().width() for it in items), default=0)
+        h = max((it.minimumSize().height() for it in items), default=0)
+        return QSize(w + m.left() + m.right(), h + m.top() + m.bottom())
+
+    def _visible(self) -> list[QLayoutItem]:
+        return [it for it in self._items if it.spacerItem() is not None or not it.isEmpty()]
+
+    def _arrange(self, rect: QRect, apply: bool) -> int:
+        m = self.contentsMargins()
+        r = rect.adjusted(m.left(), m.top(), -m.right(), -m.bottom())
+        lines: list[list[QLayoutItem]] = []
+        line: list[QLayoutItem] = []
+        x = 0
+        for it in self._visible():
+            w = it.sizeHint().width()
+            if line and x + self._h + w > r.width():
+                lines.append(line)
+                line, x = [], 0
+            x += (self._h if line else 0) + w
+            line.append(it)
+        if line:
+            lines.append(line)
+        y = r.y()
+        for line in lines:
+            widths = [min(it.sizeHint().width(), r.width()) for it in line]
+            stretch = [i for i, it in enumerate(line) if it.spacerItem() is not None and it.expandingDirections()
+                       & Qt.Horizontal]
+            free = max(0, r.width() - sum(widths) - self._h * (len(line) - 1))
+            for i in stretch:
+                widths[i] += free // len(stretch)
+            lh = max(it.sizeHint().height() for it in line)
+            x = r.x()
+            for it, w in zip(line, widths):
+                h = min(lh, it.sizeHint().height())
+                if apply:
+                    it.setGeometry(QRect(x, y + (lh - h) // 2, w, h))
+                x += w + self._h
+            y += lh + self._v
+        return max(0, y - self._v - r.y()) + m.top() + m.bottom() if lines else m.top() + m.bottom()
+
+
+class FitScrollArea(QScrollArea):
+    """Scrollbereich, der so hoch sein möchte wie sein Inhalt: Bei genug Platz gibt es keine Bildlaufleiste,
+    im kleinen Fenster wird gescrollt, statt Bedienelemente übereinanderzuschieben."""
+
+    def __init__(self, content: QWidget, parent=None):
+        super().__init__(parent)
+        self.setWidget(content)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setStyleSheet("QScrollArea { background: transparent; }")
+        self.viewport().setAutoFillBackground(False)
+        content.setAutoFillBackground(False)
+        self._w = -1
+
+    def sizeHint(self) -> QSize:
+        c = self.widget()
+        w = self.viewport().width() if self._w > 0 else c.sizeHint().width()
+        h = c.heightForWidth(w) if c.hasHeightForWidth() else -1
+        return QSize(c.sizeHint().width(), h if h >= 0 else c.sizeHint().height())
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(super().minimumSizeHint().width(), 90)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if e.size().width() != self._w:  # Inhalt bricht anders um: gewünschte Höhe neu melden
+            self._w = e.size().width()
+            self.updateGeometry()
 
 
 def fmt_time(t: float) -> str:
