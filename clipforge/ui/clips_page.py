@@ -821,7 +821,7 @@ class ClipsPage(QWidget):
     def _edit_layout(self):
         """Editor öffnen: Facecam frei auf dem 9:16-Bild platzieren."""
         from clipforge.pipeline.facecam import FULL_RES, Rect
-        from clipforge.pipeline.runner import cam_size, custom_border, custom_for, project_game
+        from clipforge.pipeline.runner import cam_size, custom_border, custom_for, custom_stack, project_game
         from clipforge.ui.layout_editor import LayoutEditor
 
         c, proj = self.cur, self.proj
@@ -853,7 +853,9 @@ class ClipsPage(QWidget):
             w = min(0.62, h * 1920 * aspect / 1080)
             cur = (0.5 - w / 2, 0.025, w)
         name = layout[7:] if layout.startswith("custom:") else ""
-        dlg = LayoutEditor(cam_pix, aspect, cur, name, custom_border(c, self.s, layout), self)
+        dlg = LayoutEditor(cam_pix, aspect, cur, name, custom_border(c, self.s, layout),
+                           custom_stack(c, self.s, layout), self)
+        dlg.set_source(QPixmap.fromImage(bgr_to_qimage(f)))  # ganzes Spielbild für „Gameplay unten“
         # Hintergrund: Gameplay im Ausschnitt des Spiels, im Hintergrund gerendert
         out = Path(tempfile.gettempdir()) / f"clipforge_bg_{proj.id}.png"
         game, media = project_game(proj), proj.media
@@ -872,10 +874,11 @@ class ClipsPage(QWidget):
         s = Settings.load()
         if dlg.mode == "once":
             c.layout = "custom"
-            c.extras = {**(c.extras or {}), "custom_cam": list(dlg.value), "custom_border": dlg.border}
+            c.extras = {**(c.extras or {}), "custom_cam": list(dlg.value), "custom_border": dlg.border,
+                        "custom_stack": dlg.stack}
             msg = "Eigenes Layout für diesen Clip übernommen."
         else:
-            s.custom_layouts[dlg.name] = {"cam": list(dlg.value), "border": dlg.border}
+            s.custom_layouts[dlg.name] = {"cam": list(dlg.value), "border": dlg.border, "stack": dlg.stack}
             if dlg.mode == "default":
                 s.default_layout = f"custom:{dlg.name}"
             s.save()
@@ -948,13 +951,15 @@ class ClipsPage(QWidget):
         import hashlib
         import json
 
-        from clipforge.pipeline.runner import cam_size, custom_border, custom_for, extra_on, project_game
+        from clipforge.pipeline.runner import (cam_size, custom_border, custom_for, custom_stack, extra_on,
+                                               project_game)
         from clipforge.pipeline.subtitles import SubtitleStyle
 
         size = cam_size(c, self.s)
         game = project_game(proj)
         custom = custom_for(c, self.s, c.layout or self.s.default_layout)
         border = custom_border(c, self.s, c.layout or self.s.default_layout)
+        stack = custom_stack(c, self.s, c.layout or self.s.default_layout)
         cam = Facecam.from_dict(proj.state.get("facecam"))
         layout = c.layout or self.s.default_layout
         words = [Word(w, s, e) for w, s, e in c.edited_words] if c.edited_words else \
@@ -966,7 +971,7 @@ class ClipsPage(QWidget):
         style.enabled = extra_on(c, self.s, "subtitles")
         hook = c.hook if extra_on(c, self.s, "hook") else ""
         key = hashlib.sha1(json.dumps([layout, at, proj.state.get("facecam"), style.enabled, self.s.subtitles,
-                                       c.edited_words, size, hook, game, custom, border], sort_keys=True,
+                                       c.edited_words, size, hook, game, custom, border, stack], sort_keys=True,
                                       default=str).encode()).hexdigest()[:12]
         out = proj.dir / "pv916" / f"{key}.png"
         self._pv916_key = key
@@ -979,7 +984,7 @@ class ClipsPage(QWidget):
         def job(progress, cancel, confirm):
             return render.preview_frame(proj.source.path, at, layout, cam, media, out, words=words,
                                         subtitle_style=style, cam_size=size, hook=hook, game=game,
-                                        custom=custom, cam_border=border)
+                                        custom=custom, cam_border=border, cam_stack=stack)
 
         t = Task(job)
         self._pv916_task = t

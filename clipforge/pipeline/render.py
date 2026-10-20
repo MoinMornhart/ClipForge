@@ -56,6 +56,7 @@ class RenderJob:
     game: str = ""  # Spiel-Schlüssel (games.GAMES): bestimmt Ausschnitt und Breite des Gameplays
     custom: tuple[float, float, float] | None = None  # eigenes Layout: Facecam x, y, Breite (0–1)
     cam_border: bool = True  # Rahmen um die Facecam
+    cam_stack: bool = False  # eigenes Layout: Facecam oben (dahinter Spiel unscharf), Gameplay darunter
 
 
 def encoder_args(codec: str, nvenc: bool) -> list[str]:
@@ -100,7 +101,7 @@ def plan(job: RenderJob, media: dict, work: Path) -> tuple[str, str]:
 
     game = games.profile(job.game)
     li = layouts.LayoutInput(sw, sh, job.fps, fullcam=fullcam and not has_cam, zoom=game.zoom,
-                             custom=job.custom, border=job.cam_border)
+                             custom=job.custom, border=job.cam_border, custom_stack=job.cam_stack)
     if layout.startswith("custom") and not job.custom:
         layout = "top"  # Vorlage fehlt (gelöscht): nächstbestes Layout
     clip = job.clip
@@ -136,6 +137,8 @@ def plan(job: RenderJob, media: dict, work: Path) -> tuple[str, str]:
             and job.smart_crop:
         out_h = {"stack": H - li.stack_top, "hand": H - li.stack_top,
                  "face_hand": H - sum(li.face_hand_rows)}.get(layout, H)
+        if layout.startswith("custom"):  # „Facecam oben, Gameplay unten“: Gameplay nur unter der Facecam
+            out_h = H - layouts.custom_top(li)
         gw = layouts.gameplay_width(ch, W, out_h)
         try:
             li.gameplay_x = fc.smart_crop_x(job.src, clip.start, clip.end, gw, sw, sh,
@@ -202,13 +205,15 @@ def preview_frame(src: Path, at: float, layout: str, cam: fc.Facecam | None, med
                   ffmpeg_path: str = "", words: list[Word] | None = None,
                   subtitle_style: SubtitleStyle | None = None, cam_size: int = 40, hook: str = "",
                   hook_mode: str = "hook", game: str = "",
-                  custom: tuple[float, float, float] | None = None, cam_border: bool = True) -> Path:
+                  custom: tuple[float, float, float] | None = None, cam_border: bool = True,
+                  cam_stack: bool = False) -> Path:
     """Ein einzelnes 9:16-Bild mit dem gewählten Layout – für die Live-Vorschau im Facecam-Dialog.
     Ohne Nachführung und ohne Bildanalyse, damit es in unter einer Sekunde fertig ist."""
     work = Path(tempfile.mkdtemp(prefix="cf_preview_"))
     try:
         job = RenderJob(src, Clip(at, at + 1.0, at, []), out_png, layout, facecam=cam, smart_crop=False,
-                        track_face=False, cam_size=cam_size, game=game, custom=custom, cam_border=cam_border)
+                        track_face=False, cam_size=cam_size, game=game, custom=custom, cam_border=cam_border,
+                        cam_stack=cam_stack)
         resolved, graph = plan(job, media, work)
         graph = _zero_start(graph)
         if subtitle_style and subtitle_style.enabled and words:

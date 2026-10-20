@@ -93,3 +93,28 @@ def test_clips_page_starts_with_vod_library(app):
     assert cp.body.currentIndex() == 1 and cp.proj.id == card.pid and len(cp.clips) == 2
     cp.back_btn.click()
     assert cp.body.currentIndex() == 0
+
+
+def test_layout_editor_stack(app):
+    """Eigenes Layout „Facecam oben, Gameplay unten“: an/aus, Aufteilung folgt der Facecam, Ergebnis kommt zurück."""
+    from PySide6.QtGui import QColor, QPixmap
+
+    from clipforge.ui.layout_editor import LayoutEditor
+
+    cam = QPixmap(160, 90)
+    cam.fill(QColor("#3a7"))
+    dlg = LayoutEditor(cam, 16 / 9, (0.2, 0.02, 0.6), stack=True)
+    assert dlg.stack_cb.isChecked() and "Facecam-Bereich" in dlg.stack_hint.text()
+    src = QPixmap(1920, 1080)
+    src.fill(QColor("#246"))
+    dlg.set_source(src)
+    assert dlg.canvas.src_blur is not None and not dlg.canvas.grab().isNull()  # zeichnet Bereich + Gameplay
+    before = dlg.canvas.split()
+    dlg.size.setValue(40)  # kleinere Facecam → kleinerer Facecam-Bereich, mehr Gameplay
+    assert dlg.canvas.split() < before
+    dlg.border_cb.setChecked(False)
+    assert not dlg.canvas.border
+    dlg._finish("once")
+    assert dlg.mode == "once" and dlg.stack and not dlg.border
+    dlg.stack_cb.setChecked(False)
+    assert dlg.canvas.split() == 0 and dlg.stack_hint.text() == ""
