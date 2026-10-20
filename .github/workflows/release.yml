@@ -1,0 +1,60 @@
+# Veröffentlicht ein Release: baut auf Windows die ClipForge-Setup.exe (installer/build.ps1) und legt das
+# GitHub-Release v<Version> mit der Setup.exe und den Notizen aus installer/RELEASE.md an. Installierte
+# ClipForge-Versionen finden es danach unter Einstellungen → Über & Update.
+# Starten: Actions → „Release“ → Run workflow (auf main). Vorher Version in clipforge/__init__.py und
+# installer/RELEASE.md anpassen – ein schon vorhandenes Release wird nie überschrieben.
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Version und Notizen prüfen
+        id: meta
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path clipforge/__init__.py -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
+          $notes = Get-Content installer/RELEASE.md -Encoding utf8
+          $title = $notes[0] -replace '^#\s*', ''
+          if ($title -notmatch [regex]::Escape($v)) { throw "installer/RELEASE.md passt nicht zur Version ${v}: $title" }
+          $notes | Select-Object -Skip 1 | Set-Content release-body.md -Encoding utf8
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$v"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "title=$title"
+
+      - name: Werkzeuge (PyInstaller, Inno Setup)
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check pyinstaller
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+
+      - name: Setup.exe bauen
+        shell: pwsh
+        env:
+          CLIPFORGE_BUILD_PY: python
+        run: ./installer/build.ps1
+
+      - name: Release veröffentlichen
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TITLE: ${{ steps.meta.outputs.title }}
+        run: >-
+          gh release create "v$env:VERSION" "dist/ClipForge-Setup-$env:VERSION.exe"
+          --repo "$env:GITHUB_REPOSITORY" --target "$env:GITHUB_SHA"
+          --title "$env:TITLE" --notes-file release-body.md
