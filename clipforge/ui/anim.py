@@ -21,11 +21,26 @@ class AnimatedStack(QStackedWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._overlay: QLabel | None = None
+        self._cover: QLabel | None = None
         self._anim = None
         self.animate = True
 
+    def _end_transition(self) -> None:
+        """Laufenden Übergang sofort beenden und seine Standbilder entfernen – etwa bei schnellem Weiterklicken.
+        Sonst löscht der neue Übergang das Standbild des alten, und dessen Ende greift auf das gelöschte zu."""
+        if self._anim is not None:
+            self._anim.stop()  # stop() löst kein finished aus
+            self._anim.deleteLater()
+        for w in (self._overlay, self._cover):
+            if w is not None and _alive(w):
+                w.deleteLater()
+        self._anim = self._overlay = self._cover = None
+
     def slide_to(self, index: int) -> None:
-        if index == self.currentIndex() or not self.animate or not self.isVisible():
+        if index == self.currentIndex():
+            return
+        self._end_transition()
+        if not self.animate or not self.isVisible():
             self.setCurrentIndex(index)
             return
         forward = index > self.currentIndex()
@@ -34,8 +49,6 @@ class AnimatedStack(QStackedWidget):
         target.ensurePolished()
         pix = target.grab()  # Standbild der neuen Seite
         self.setCurrentIndex(index)
-        if self._overlay:
-            self._overlay.deleteLater()
         ov = QLabel(self)
         ov.setPixmap(pix)
         ov.setGeometry(self.rect())
@@ -64,15 +77,14 @@ class AnimatedStack(QStackedWidget):
         target_cover.setAttribute(Qt.WA_TransparentForMouseEvents)
         target_cover.show()
         ov.raise_()
+        self._cover = target_cover
         group = QParallelAnimationGroup(self)
         group.addAnimation(move)
         group.addAnimation(fade)
 
         def done():
-            ov.deleteLater()
-            target_cover.deleteLater()
-            if self._overlay is ov:
-                self._overlay = None
+            if self._anim is group:  # sonst hat ein neuer Übergang schon aufgeräumt
+                self._end_transition()
 
         group.finished.connect(done)
         group.start()
