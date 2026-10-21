@@ -25,6 +25,7 @@ from clipforge.pipeline.project import Project
 from clipforge.pipeline.runner import Pipeline
 from clipforge.pipeline.transcribe import Word
 from clipforge.ui import theme
+from clipforge.ui.anim import _alive
 from clipforge.ui.library import VodLibrary
 from clipforge.ui.widgets import FitScrollArea, FlowLayout, RangeSlider, RectSelector, bgr_to_qimage, fmt_time
 from clipforge.ui.worker import Task
@@ -883,7 +884,8 @@ class ClipsPage(QWidget):
             return render.preview_frame(proj.source.path, at, "crop", None, media, out, game=game)
 
         t = Task(job)
-        t.finished.connect(lambda p: dlg.set_background(QPixmap(str(p))) if dlg.isVisible() else None)
+        # Editor schon zu (und gelöscht)? Dann nichts mehr setzen
+        t.finished.connect(lambda p: dlg.set_background(QPixmap(str(p))) if _alive(dlg) and dlg.isVisible() else None)
         self._track(t)
         t.start()
         ok = dlg.exec()

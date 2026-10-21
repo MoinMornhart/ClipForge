@@ -159,3 +159,40 @@ def test_clip_editor_controls_never_overlap(app, size):
     # Player und 9:16-Vorschau liegen über dem Zeitregler, nicht darauf
     assert cp.pv916.mapTo(cp, QPoint(0, cp.pv916.height())).y() <= cp.range.mapTo(cp, QPoint(0, 0)).y()
     assert cp.lower.widget().width() <= cp.lower.viewport().width()  # nichts ragt rechts aus dem Bereich
+
+
+def test_quick_page_switch_keeps_no_deleted_label(app, monkeypatch):
+    """Schnell weiterklicken, während der Seitenübergang noch läuft: kein „Internal C++ object (QLabel) already
+    deleted“ (der neue Übergang löschte das Standbild des alten, dessen Ende griff noch darauf zu) und keine
+    übrig gebliebenen Standbilder über der Seite."""
+    import sys
+    import time
+
+    from PySide6.QtCore import QEvent
+
+    from clipforge.ui.anim import AnimatedStack
+
+    errors = []
+    monkeypatch.setattr(sys, "excepthook", lambda t, e, tb: errors.append(f"{t.__name__}: {e}"))
+
+    def wait(ms):
+        end = time.time() + ms / 1000
+        while time.time() < end:
+            app.processEvents()
+            app.sendPostedEvents(None, QEvent.DeferredDelete.value)  # deleteLater wie in der echten Ereignisschleife
+            time.sleep(0.005)
+
+    st = AnimatedStack()
+    pages = [QLabel(f"Seite {i}") for i in range(3)]
+    for p in pages:
+        st.addWidget(p)
+    st.resize(400, 300)
+    st.show()
+    wait(50)
+    for idx in (1, 2, 0, 2, 1):
+        st.slide_to(idx)
+        wait(30)  # kürzer als ein Übergang (260 ms)
+    wait(600)
+    assert errors == []
+    assert st.currentIndex() == 1
+    assert [w for w in st.findChildren(QLabel) if w.parent() is st and w not in pages] == []
